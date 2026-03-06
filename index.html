@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quiz Builder & Solver</title>
+  <style>
+    :root { --bg:#f6f7fb; --card:#fff; --text:#1f2937; --muted:#6b7280; --line:#d1d5db; --accent:#2563eb; --ok:#15803d; --bad:#b91c1c; }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
+    .wrap{max-width:980px;margin:0 auto;padding:24px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:20px;margin-bottom:18px;box-shadow:0 2px 8px rgba(0,0,0,.04)}
+    h1,h2,h3,p{margin:0 0 12px}
+    .muted{color:var(--muted)}
+    textarea,input{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:12px;font:inherit}
+    textarea{min-height:220px;resize:vertical}
+    button{border:0;border-radius:12px;padding:10px 16px;font:inherit;cursor:pointer;background:var(--accent);color:#fff}
+    button.secondary{background:#eef2ff;color:#1d4ed8;border:1px solid #c7d2fe}
+    button.ghost{background:#fff;color:var(--text);border:1px solid var(--line)}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .grow{flex:1 1 260px}
+    .question{margin-bottom:16px}
+    .option{display:block;border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin:10px 0;background:#fff}
+    .option.correct{border-color:var(--ok);background:#f0fdf4}
+    .option.wrong{border-color:var(--bad);background:#fef2f2}
+    .answerbox{margin-top:10px;padding:12px 14px;border-radius:14px;background:#f8fafc;border:1px solid var(--line)}
+    .pill{display:inline-block;padding:4px 10px;border-radius:999px;background:#eef2ff;color:#3730a3;font-size:.9rem;margin-right:8px}
+    .topbar{position:sticky;bottom:12px;display:flex;justify-content:flex-end}
+    code{background:#f3f4f6;padding:2px 6px;border-radius:8px}
+    .small{font-size:.92rem}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>Quiz Builder & Solver</h1>
+    <p class="muted">TSVを貼ると、その場でクイズに変換できます。解答後に正誤・解説・根拠抜粋を表示します。GitHub Pages にそのまま置ける単一HTML版です。</p>
+  </div>
+
+  <div class="card">
+    <h2>1. Quiz settings</h2>
+    <div class="row">
+      <div class="grow">
+        <label>Quiz title</label>
+        <input id="quizTitle" placeholder="Chapter 62 Quiz" value="Chapter Quiz" />
+      </div>
+      <div class="grow">
+        <label>Description</label>
+        <input id="quizDesc" placeholder="Short description" value="Paste TSV to generate a quiz." />
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2. Paste TSV</h2>
+    <p class="muted small">必須列: <code>No</code>, <code>Question</code>, <code>Option A</code>, <code>Option B</code>, <code>Option C</code>, <code>Option D</code>, <code>Correct Answer</code></p>
+    <textarea id="tsvInput" placeholder="Paste TSV here"></textarea>
+    <div class="row" style="margin-top:12px">
+      <button id="generateBtn">Generate quiz</button>
+      <button class="secondary" id="sampleBtn">Load sample TSV</button>
+      <button class="ghost" id="shareBtn" disabled>Create shareable link</button>
+    </div>
+    <div id="shareArea" style="display:none;margin-top:12px">
+      <textarea id="shareLink" readonly style="min-height:90px"></textarea>
+      <div class="row" style="margin-top:10px"><button class="ghost" id="copyBtn">Copy link</button></div>
+    </div>
+    <p id="status" class="muted" style="margin-top:10px"></p>
+  </div>
+
+  <div class="card">
+    <h2 id="displayTitle">Chapter Quiz</h2>
+    <p id="displayDesc" class="muted">Paste TSV to generate a quiz.</p>
+    <div style="margin-top:8px"><span class="pill" id="countPill">0 questions</span></div>
+  </div>
+
+  <div id="quizContainer"></div>
+
+  <div class="topbar"><button id="submitBtn" disabled>Submit answers</button></div>
+</div>
+
+<script>
+const sampleTSV = `No\tQuestion\tOption A\tOption B\tOption C\tOption D\tCorrect Answer\tExplanation\tSupporting Excerpt
+1\tWhich statement about an ideal renal biomarker is appropriate?\tIt should show wide biologic variability and partial protein binding.\tIt should be easy to measure and cost-effective.\tIt should undergo substantial non-renal metabolism.\tIt should be secreted and reabsorbed by the tubules.\tB\tThe chapter lists easy measurability and cost-effectiveness among the ideal properties of a renal biomarker.\tThe ideal properties of a renal biomarker include ... easy measurability, and cost-effectiveness.
+2\tWhich description of creatinine is correct?\tIts production rate varies markedly from day to day and is independent of muscle mass.\tIt is synthesized mainly in the liver from ammonia.\tIt is a breakdown product of creatine and creatine phosphate in skeletal muscle.\tIt is reabsorbed extensively by the proximal tubule in dogs and cats.\tC\tCreatinine is described as a breakdown product of creatine and creatine phosphate in skeletal muscle.\tCreatinine is a breakdown product of creatine and creatine phosphate in skeletal muscle.`;
+
+let quiz = [];
+let submitted = false;
+
+function normalizeKey(key) {
+  return key.toLowerCase().replace(/[\s_\-・（）():：]/g, '').trim();
+}
+
+function parseTSV(tsv) {
+  const lines = tsv.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').filter(Boolean);
+  if (lines.length < 2) throw new Error('TSVの行数が足りません。');
+  const headers = lines[0].split('\t').map(h => h.trim());
+  const map = headers.map(normalizeKey);
+  const find = (...cands) => cands.map(normalizeKey).map(c=>map.indexOf(c)).find(i=>i>=0) ?? -1;
+  const idx = {
+    no: find('No','番号'),
+    q: find('Question','問題'),
+    a: find('Option A','A','選択肢A'),
+    b: find('Option B','B','選択肢B'),
+    c: find('Option C','C','選択肢C'),
+    d: find('Option D','D','選択肢D'),
+    ans: find('Correct Answer','Correct','Answer','正答','正解','解答'),
+    exp: find('Explanation','解説','Feedback'),
+    ex: find('Supporting Excerpt','Excerpt','根拠','根拠本文抜粋','本文抜粋')
+  };
+  ['q','a','b','c','d','ans'].forEach(k => { if (idx[k] < 0) throw new Error('必要な列が見つかりません: ' + k); });
+  return lines.slice(1).map((line,i)=>{
+    const cells = line.split('\t');
+    const ans = (cells[idx.ans]||'').trim().toUpperCase();
+    if (!['A','B','C','D'].includes(ans)) throw new Error((i+2)+'行目の正答がA/B/C/Dではありません。');
+    return {
+      id: (cells[idx.no] || String(i+1)).trim(),
+      question: (cells[idx.q]||'').trim(),
+      options: {
+        A: (cells[idx.a]||'').trim(),
+        B: (cells[idx.b]||'').trim(),
+        C: (cells[idx.c]||'').trim(),
+        D: (cells[idx.d]||'').trim()
+      },
+      correct: ans,
+      explanation: idx.exp >= 0 ? (cells[idx.exp]||'').trim() : '',
+      excerpt: idx.ex >= 0 ? (cells[idx.ex]||'').trim() : ''
+    };
+  }).filter(r => r.question);
+}
+
+function renderQuiz() {
+  const wrap = document.getElementById('quizContainer');
+  wrap.innerHTML = '';
+  document.getElementById('countPill').textContent = quiz.length + ' questions';
+  document.getElementById('submitBtn').disabled = quiz.length === 0;
+
+  quiz.forEach((q, i) => {
+    const card = document.createElement('div');
+    card.className = 'card question';
+    let html = `<h3>Q${i+1}. ${escapeHtml(q.question)}</h3>`;
+    ['A','B','C','D'].forEach(key => {
+      const checked = q.selected === key ? 'checked' : '';
+      let cls = 'option';
+      if (submitted && key === q.correct) cls += ' correct';
+      if (submitted && q.selected === key && key !== q.correct) cls += ' wrong';
+      html += `<label class="${cls}"><input type="radio" name="q_${i}" value="${key}" ${checked} ${submitted ? 'disabled' : ''}> <strong>${key}.</strong> ${escapeHtml(q.options[key])}</label>`;
+    });
+    if (submitted) {
+      html += `<div class="answerbox"><div><strong>${q.selected === q.correct ? 'Correct' : 'Incorrect'}</strong>${q.selected === q.correct ? '' : ' · Correct answer: ' + q.correct}</div>`;
+      if (q.explanation) html += `<p class="small"><strong>Explanation:</strong> ${escapeHtml(q.explanation)}</p>`;
+      if (q.excerpt) html += `<p class="small"><strong>Supporting excerpt:</strong> ${escapeHtml(q.excerpt)}</p>`;
+      html += `</div>`;
+    }
+    card.innerHTML = html;
+    wrap.appendChild(card);
+  });
+
+  document.querySelectorAll('input[type=radio]').forEach(el => {
+    el.addEventListener('change', e => {
+      const [_, idx] = e.target.name.split('_');
+      quiz[Number(idx)].selected = e.target.value;
+    });
+  });
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function setStatus(msg) { document.getElementById('status').textContent = msg || ''; }
+
+function buildShareLink() {
+  const payload = {
+    title: document.getElementById('quizTitle').value,
+    desc: document.getElementById('quizDesc').value,
+    quiz
+  };
+  const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+  return location.origin + location.pathname + '#quiz=' + encoded;
+}
+
+function loadFromHash() {
+  if (!location.hash.startsWith('#quiz=')) return false;
+  try {
+    const raw = location.hash.slice(6);
+    const payload = JSON.parse(decodeURIComponent(escape(atob(raw))));
+    document.getElementById('quizTitle').value = payload.title || 'Chapter Quiz';
+    document.getElementById('quizDesc').value = payload.desc || '';
+    document.getElementById('displayTitle').textContent = payload.title || 'Chapter Quiz';
+    document.getElementById('displayDesc').textContent = payload.desc || '';
+    quiz = payload.quiz || [];
+    submitted = false;
+    renderQuiz();
+    document.getElementById('shareBtn').disabled = quiz.length === 0;
+    setStatus('共有リンクからクイズを読み込みました。');
+    return true;
+  } catch (e) {
+    setStatus('共有リンクの読み込みに失敗しました。');
+    return false;
+  }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  loadFromHash();
+
+  document.getElementById('sampleBtn').addEventListener('click', () => {
+    document.getElementById('tsvInput').value = sampleTSV;
+    setStatus('サンプルTSVを読み込みました。');
+  });
+
+  document.getElementById('generateBtn').addEventListener('click', () => {
+    try {
+      const tsv = document.getElementById('tsvInput').value;
+      quiz = parseTSV(tsv);
+      submitted = false;
+      document.getElementById('displayTitle').textContent = document.getElementById('quizTitle').value || 'Chapter Quiz';
+      document.getElementById('displayDesc').textContent = document.getElementById('quizDesc').value || '';
+      renderQuiz();
+      document.getElementById('shareBtn').disabled = quiz.length === 0;
+      setStatus(`クイズを生成しました。${quiz.length}問です。`);
+    } catch (e) {
+      setStatus(e.message || 'TSVの解析に失敗しました。');
+    }
+  });
+
+  document.getElementById('submitBtn').addEventListener('click', () => {
+    if (!quiz.length) return;
+    const unanswered = quiz.filter(q => !q.selected).length;
+    if (unanswered > 0) {
+      setStatus('未回答の問題があります。');
+      return;
+    }
+    submitted = true;
+    renderQuiz();
+    const score = quiz.filter(q => q.selected === q.correct).length;
+    setStatus(`提出しました。スコア: ${score} / ${quiz.length}`);
+    window.scrollTo({top:0, behavior:'smooth'});
+  });
+
+  document.getElementById('shareBtn').addEventListener('click', () => {
+    const link = buildShareLink();
+    document.getElementById('shareLink').value = link;
+    document.getElementById('shareArea').style.display = 'block';
+    setStatus('共有リンクを作成しました。');
+  });
+
+  document.getElementById('copyBtn').addEventListener('click', async () => {
+    await navigator.clipboard.writeText(document.getElementById('shareLink').value);
+    setStatus('共有リンクをコピーしました。');
+  });
+});
+</script>
+</body>
+</html>
