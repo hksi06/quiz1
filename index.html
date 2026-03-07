@@ -21,7 +21,7 @@
     .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
     @media (max-width:700px){.row{grid-template-columns:1fr}}
     label{display:block;font-weight:600;margin-bottom:6px}
-    input[type="text"], textarea{width:100%;border:1px solid var(--line);border-radius:14px;padding:12px 14px;font:inherit;background:#fff}
+    input[type="text"], textarea, input[type="file"]{width:100%;border:1px solid var(--line);border-radius:14px;padding:12px 14px;font:inherit;background:#fff}
     textarea{min-height:320px;resize:vertical}
     .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
     button,.buttonlink{border:none;background:var(--primary);color:#fff;border-radius:14px;padding:11px 16px;font:inherit;font-weight:700;cursor:pointer;text-decoration:none;display:inline-block}
@@ -52,15 +52,52 @@
 <body>
 <div class="wrap" id="app"></div>
 <script>
-const SAMPLE_TSV = `No	Question	Option A	Option B	Option C	Option D	Correct Answer	Explanation	Supporting Excerpt
-1	Which statement about an ideal renal biomarker is appropriate?	It should show wide biologic variability and partial protein binding.	It should be easy to measure and cost-effective.	It should undergo substantial non-renal metabolism.	It should be secreted and reabsorbed by the tubules.	B	The chapter lists easy measurability and cost-effectiveness among the ideal properties of a renal biomarker.	The ideal properties of a renal biomarker include ... easy measurability, and cost-effectiveness.
-2	Which description of creatinine is correct?	Its production rate varies markedly from day to day and is independent of muscle mass.	It is synthesized mainly in the liver from ammonia.	It is a breakdown product of creatine and creatine phosphate in skeletal muscle.	It is reabsorbed extensively by the proximal tubule in dogs and cats.	C	Creatinine is described as a breakdown product of creatine and creatine phosphate in skeletal muscle.	Creatinine is a breakdown product of creatine and creatine phosphate in skeletal muscle.`;
+const SAMPLE_TSV = `No\tQuestion\tOption A\tOption B\tOption C\tOption D\tCorrect Answer\tExplanation\tSupporting Excerpt
+1\tWhich statement about an ideal renal biomarker is appropriate?\tIt should show wide biologic variability and partial protein binding.\tIt should be easy to measure and cost-effective.\tIt should undergo substantial non-renal metabolism.\tIt should be secreted and reabsorbed by the tubules.\tB\tThe chapter lists easy measurability and cost-effectiveness among the ideal properties of a renal biomarker.\tThe ideal properties of a renal biomarker include ... easy measurability, and cost-effectiveness.
+2\tWhich description of creatinine is correct?\tIts production rate varies markedly from day to day and is independent of muscle mass.\tIt is synthesized mainly in the liver from ammonia.\tIt is a breakdown product of creatine and creatine phosphate in skeletal muscle.\tIt is reabsorbed extensively by the proximal tubule in dogs and cats.\tC\tCreatinine is described as a breakdown product of creatine and creatine phosphate in skeletal muscle.\tCreatinine is a breakdown product of creatine and creatine phosphate in skeletal muscle.`;
 
-function escapeHtml(s=''){ return s.replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
+function escapeHtml(s=''){ return s.replace(/[&<>\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch])); }
 function norm(s=''){ return s.toLowerCase().replace(/[\s_\-・（）()]/g,'').replace(/：/g,'').trim(); }
-function safeEncode(obj){ return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
-function safeDecode(s){ return JSON.parse(decodeURIComponent(escape(atob(s)))); }
 function shuffleArray(arr){ const a = arr.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+
+function bytesToBase64Url(bytes){
+  let binary = '';
+  const chunk = 0x8000;
+  for(let i=0;i<bytes.length;i+=chunk){
+    binary += String.fromCharCode(...bytes.subarray(i, i+chunk));
+  }
+  return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function base64UrlToBytes(base64url){
+  const padded = base64url.replace(/-/g,'+').replace(/_/g,'/') + '==='.slice((base64url.length + 3) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+async function compressString(str){
+  if (!('CompressionStream' in window)) {
+    throw new Error('このブラウザでは圧縮共有が使えません。');
+  }
+  const cs = new CompressionStream('gzip');
+  const writer = cs.writable.getWriter();
+  writer.write(new TextEncoder().encode(str));
+  writer.close();
+  const compressed = await new Response(cs.readable).arrayBuffer();
+  return bytesToBase64Url(new Uint8Array(compressed));
+}
+async function decompressString(base64url){
+  if (!('DecompressionStream' in window)) {
+    throw new Error('このブラウザでは圧縮共有が使えません。');
+  }
+  const bytes = base64UrlToBytes(base64url);
+  const ds = new DecompressionStream('gzip');
+  const writer = ds.writable.getWriter();
+  writer.write(bytes);
+  writer.close();
+  const decompressed = await new Response(ds.readable).arrayBuffer();
+  return new TextDecoder().decode(decompressed);
+}
 
 function parseTSV(tsv){
   const lines = tsv.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n").filter(x=>x.trim());
@@ -109,27 +146,44 @@ function buildQuestions(questions, shuffleQ, shuffleC){
   return qs;
 }
 
-function getHashQuiz(){
+async function getHashQuiz(){
   const hash = location.hash.replace(/^#/,'');
-  if(!hash.startsWith('quiz=')) return null;
-  try{ return safeDecode(hash.slice(5)); }catch(e){ return null; }
+  if(hash.startsWith('quizz=')){
+    try{
+      const json = await decompressString(hash.slice(6));
+      return JSON.parse(json);
+    }catch(e){
+      console.error(e);
+      return {__error:"共有リンクの展開に失敗しました。リンクが壊れているか、ブラウザが圧縮共有に未対応です。"};
+    }
+  }
+  if(hash.startsWith('quiz=')){
+    try{
+      const padded = hash.slice(5);
+      const json = decodeURIComponent(escape(atob(padded)));
+      return JSON.parse(json);
+    }catch(e){
+      return {__error:"旧形式リンクの読み込みに失敗しました。"};
+    }
+  }
+  return null;
 }
 
 const state = {
   title:'Chapter Quiz', description:'Paste TSV to generate an answer page.',
   tsv:'', questions:[], rendered:[], answers:{}, shareLink:'', error:'',
-  shuffleQuestions:false, shuffleChoices:false, mode:'builder'
+  shuffleQuestions:false, shuffleChoices:false, mode:'builder', status:''
 };
 
 function saveLocal(){
   if(state.mode==='solver') return;
-  localStorage.setItem('quiz_builder_single_file_v2', JSON.stringify({
+  localStorage.setItem('quiz_builder_single_file_v3', JSON.stringify({
     title:state.title, description:state.description, tsv:state.tsv, questions:state.questions,
     shuffleQuestions:state.shuffleQuestions, shuffleChoices:state.shuffleChoices
   }));
 }
 function loadLocal(){
-  const raw = localStorage.getItem('quiz_builder_single_file_v2');
+  const raw = localStorage.getItem('quiz_builder_single_file_v3');
   if(!raw) return;
   try{
     const s = JSON.parse(raw);
@@ -142,12 +196,39 @@ function loadLocal(){
   }catch(e){}
 }
 function resetRendered(){ state.rendered = buildQuestions(state.questions, state.shuffleQuestions, state.shuffleChoices); state.answers = {}; }
-function makeShareLink(){
-  const payload = safeEncode({
+async function makeShareLink(){
+  const payload = {
     title:state.title, description:state.description, questions:state.questions,
     shuffleQuestions:state.shuffleQuestions, shuffleChoices:state.shuffleChoices
-  });
-  state.shareLink = location.origin + location.pathname + '#quiz=' + payload;
+  };
+  const compressed = await compressString(JSON.stringify(payload));
+  state.shareLink = location.origin + location.pathname + '#quizz=' + compressed;
+}
+function downloadQuizFile(){
+  const payload = {
+    title:state.title, description:state.description, questions:state.questions,
+    shuffleQuestions:state.shuffleQuestions, shuffleChoices:state.shuffleChoices
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (state.title || 'quiz').replace(/[^\w\-]+/g,'_') + '.quiz.json';
+  document.body.appendChild(a);
+  a.click();
+  URL.revokeObjectURL(a.href);
+  a.remove();
+}
+async function loadQuizFile(file){
+  const text = await file.text();
+  const payload = JSON.parse(text);
+  if(!payload.questions || !Array.isArray(payload.questions)) throw new Error('クイズファイルの形式を認識できませんでした。');
+  state.title = payload.title || state.title;
+  state.description = payload.description || state.description;
+  state.questions = payload.questions;
+  state.shuffleQuestions = !!payload.shuffleQuestions;
+  state.shuffleChoices = !!payload.shuffleChoices;
+  saveLocal();
+  resetRendered();
 }
 
 function render(){
@@ -203,7 +284,7 @@ function render(){
   app.innerHTML = `
     <div class="card">
       <div class="topbar">
-        <div><h1>Quiz Builder</h1><p class="muted">TSVを貼ってクイズを作成し、回答専用ページのリンクを作ります。</p></div>
+        <div><h1>Quiz Builder</h1><p class="muted">TSVを貼ってクイズを作成し、回答専用ページのリンクかクイズファイルを作ります。</p></div>
         <div><span class="pill">Builder page</span></div>
       </div>
     </div>
@@ -220,23 +301,31 @@ function render(){
         <button class="secondary" id="sampleBtn">Load sample TSV</button>
       </div>
       ${state.error ? `<div class="alert error" style="margin-top:12px;">${escapeHtml(state.error)}</div>` : ''}
+      ${state.status ? `<div class="alert ok" style="margin-top:12px;">${escapeHtml(state.status)}</div>` : ''}
     </div>
     <div class="card">
-      <h2>2. Answer page settings</h2>
-      <p class="muted">共有リンクの先は回答専用ページになります。問題アップ欄は表示されません。</p>
+      <h2>2. Answer page sharing</h2>
+      <p class="muted">共有リンクは gzip 圧縮して以前より短くしています。さらに扱いやすさ重視なら、下のクイズファイル共有が便利です。</p>
       <div class="switches">
         <label class="switchrow"><span><strong>Shuffle question order</strong><br><span class="muted small">回答ページ表示時の問題順をランダム化します。</span></span><input id="shuffleQ" type="checkbox" ${state.shuffleQuestions ? 'checked' : ''}></label>
         <label class="switchrow"><span><strong>Shuffle choice order</strong><br><span class="muted small">選択肢順をランダム化し、正答も追従させます。</span></span><input id="shuffleC" type="checkbox" ${state.shuffleChoices ? 'checked' : ''}></label>
       </div>
-      <div class="btns"><button class="secondary" id="createLinkBtn" ${state.questions.length ? '' : 'disabled'}>Create answer-page link</button></div>
+      <div class="btns">
+        <button class="secondary" id="createLinkBtn" ${state.questions.length ? '' : 'disabled'}>Create compressed answer-page link</button>
+        <button class="secondary" id="downloadQuizBtn" ${state.questions.length ? '' : 'disabled'}>Download quiz file</button>
+      </div>
       ${state.shareLink ? `<div style="margin-top:12px;">
-        <label for="shareLink">Answer-page link</label>
+        <label for="shareLink">Compressed answer-page link</label>
         <textarea id="shareLink" readonly style="min-height:120px;">${escapeHtml(state.shareLink)}</textarea>
         <div class="btns">
           <button id="copyLinkBtn">Copy link</button>
           <a class="buttonlink ghost" href="${escapeHtml(state.shareLink)}" target="_blank" rel="noreferrer">Open answer page</a>
         </div>
       </div>` : ''}
+      <div style="margin-top:14px;">
+        <label for="quizFile">Load shared quiz file</label>
+        <input id="quizFile" type="file" accept=".json,.quiz.json,application/json">
+      </div>
       <div class="alert ok" style="margin-top:12px;">回答ページでは、各問で選択肢を選んだ瞬間に、その問題の直下へ正誤・解説・根拠抜粋が表示されます。</div>
     </div>
   `;
@@ -246,21 +335,61 @@ function render(){
   document.getElementById('tsv').addEventListener('input', e=>{ state.tsv=e.target.value; saveLocal(); });
   document.getElementById('shuffleQ').addEventListener('change', e=>{ state.shuffleQuestions=e.target.checked; saveLocal(); });
   document.getElementById('shuffleC').addEventListener('change', e=>{ state.shuffleChoices=e.target.checked; saveLocal(); });
-  document.getElementById('sampleBtn').onclick = ()=>{ state.tsv=SAMPLE_TSV; state.error=''; saveLocal(); render(); };
+  document.getElementById('sampleBtn').onclick = ()=>{ state.tsv=SAMPLE_TSV; state.error=''; state.status=''; saveLocal(); render(); };
   document.getElementById('generateBtn').onclick = ()=>{
     try{
       state.questions = parseTSV(document.getElementById('tsv').value);
-      state.error=''; state.shareLink=''; saveLocal(); alert('クイズデータを読み込みました。次に Create answer-page link を押してください。'); render();
-    }catch(e){ state.error=e.message || 'TSVの解析に失敗しました。'; render(); }
+      state.error=''; state.shareLink=''; state.status='クイズデータを読み込みました。';
+      saveLocal(); render();
+    }catch(e){ state.error=e.message || 'TSVの解析に失敗しました。'; state.status=''; render(); }
   };
   const linkBtn = document.getElementById('createLinkBtn');
-  if(linkBtn){ linkBtn.onclick = ()=>{ makeShareLink(); render(); }; }
+  if(linkBtn){ linkBtn.onclick = async ()=>{
+    try{
+      state.status='リンクを圧縮中です...';
+      render();
+      await makeShareLink();
+      state.status='圧縮リンクを作成しました。';
+      render();
+    }catch(e){
+      state.status='';
+      state.error = e.message || '圧縮リンクの作成に失敗しました。';
+      render();
+    }
+  }; }
+  const dlBtn = document.getElementById('downloadQuizBtn');
+  if(dlBtn){ dlBtn.onclick = ()=>{ downloadQuizFile(); }; }
   const copyBtn = document.getElementById('copyLinkBtn');
   if(copyBtn){ copyBtn.onclick = async ()=>{ try{ await navigator.clipboard.writeText(state.shareLink); copyBtn.textContent='Copied'; setTimeout(()=>copyBtn.textContent='Copy link',1400); }catch(e){} }; }
+  const fileInput = document.getElementById('quizFile');
+  if(fileInput){
+    fileInput.addEventListener('change', async (e)=>{
+      const file = e.target.files && e.target.files[0];
+      if(!file) return;
+      try{
+        await loadQuizFile(file);
+        state.error='';
+        state.status='クイズファイルを読み込みました。';
+        render();
+      }catch(err){
+        state.status='';
+        state.error = err.message || 'クイズファイルの読み込みに失敗しました。';
+        render();
+      }
+    });
+  }
 }
 
-(function init(){
-  const hashQuiz = getHashQuiz();
+(async function init(){
+  const hashQuiz = await getHashQuiz();
+  if(hashQuiz && hashQuiz.__error){
+    state.error = hashQuiz.__error;
+    state.mode = 'builder';
+    loadLocal();
+    if(state.questions.length) resetRendered();
+    render();
+    return;
+  }
   if(hashQuiz && hashQuiz.questions){
     state.mode='solver';
     state.title = hashQuiz.title || state.title;
