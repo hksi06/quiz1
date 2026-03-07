@@ -1,499 +1,280 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { motion } from "framer-motion";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
-import { CheckCircle2, CircleAlert, Copy, FileText, Link2, RotateCcw, Shuffle, Upload, ExternalLink } from "lucide-react";
-
-const STORAGE_KEY = "quiz-builder-app-state-v2";
-
-const sampleTSV = `No\tQuestion\tOption A\tOption B\tOption C\tOption D\tCorrect Answer\tExplanation\tSupporting Excerpt
-1\tWhich statement about an ideal renal biomarker is appropriate?\tIt should show wide biologic variability and partial protein binding.\tIt should be easy to measure and cost-effective.\tIt should undergo substantial non-renal metabolism.\tIt should be secreted and reabsorbed by the tubules.\tB\tThe chapter lists easy measurability and cost-effectiveness among the ideal properties of a renal biomarker.\tThe ideal properties of a renal biomarker include ... easy measurability, and cost-effectiveness.
-2\tWhich description of creatinine is correct?\tIts production rate varies markedly from day to day and is independent of muscle mass.\tIt is synthesized mainly in the liver from ammonia.\tIt is a breakdown product of creatine and creatine phosphate in skeletal muscle.\tIt is reabsorbed extensively by the proximal tubule in dogs and cats.\tC\tCreatinine is described as a breakdown product of creatine and creatine phosphate in skeletal muscle.\tCreatinine is a breakdown product of creatine and creatine phosphate in skeletal muscle.`;
-
-function safeBase64Encode(str) {
-  return btoa(unescape(encodeURIComponent(str)));
-}
-
-function safeBase64Decode(str) {
-  return decodeURIComponent(escape(atob(str)));
-}
-
-function normalizeKey(key) {
-  return key
-    .toLowerCase()
-    .replace(/[\s_\-・（）()]/g, "")
-    .replace(/：/g, "")
-    .trim();
-}
-
-function parseTSV(tsv) {
-  const lines = tsv
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .filter((line) => line.trim().length > 0);
-
-  if (lines.length < 2) {
-    throw new Error("TSVの行数が足りません。ヘッダー行と少なくとも1問分のデータが必要です。");
-  }
-
-  const headers = lines[0].split("\t").map((h) => h.trim());
-  const headerMap = headers.map(normalizeKey);
-
-  const findIndex = (candidates) => {
-    for (const candidate of candidates) {
-      const idx = headerMap.indexOf(normalizeKey(candidate));
-      if (idx >= 0) return idx;
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quiz Builder</title>
+  <style>
+    :root{
+      --bg:#f6f7fb; --card:#ffffff; --text:#1f2937; --muted:#6b7280; --line:#e5e7eb;
+      --primary:#2563eb; --primary-soft:#dbeafe; --green:#15803d; --green-soft:#dcfce7;
+      --red:#b91c1c; --red-soft:#fee2e2; --amber:#92400e; --amber-soft:#fef3c7;
+      --shadow:0 8px 24px rgba(17,24,39,.08); --radius:18px;
     }
-    return -1;
+    *{box-sizing:border-box}
+    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
+    .wrap{max-width:980px;margin:0 auto;padding:24px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;margin-bottom:18px}
+    h1,h2,h3{margin:0 0 10px 0;line-height:1.25}
+    h1{font-size:30px} h2{font-size:22px} h3{font-size:18px}
+    p{margin:8px 0}.muted{color:var(--muted)}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+    @media (max-width:700px){.row{grid-template-columns:1fr}}
+    label{display:block;font-weight:600;margin-bottom:6px}
+    input[type="text"], textarea{width:100%;border:1px solid var(--line);border-radius:14px;padding:12px 14px;font:inherit;background:#fff}
+    textarea{min-height:320px;resize:vertical}
+    .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+    button,.buttonlink{border:none;background:var(--primary);color:#fff;border-radius:14px;padding:11px 16px;font:inherit;font-weight:700;cursor:pointer;text-decoration:none;display:inline-block}
+    button.secondary,.buttonlink.secondary{background:#fff;color:var(--text);border:1px solid var(--line)}
+    button.ghost,.buttonlink.ghost{background:#eef2ff;color:#1e3a8a}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .pill{display:inline-block;background:#eef2ff;color:#3730a3;border-radius:999px;padding:6px 10px;font-size:13px;font-weight:700;margin-right:8px}
+    .alert{border-radius:14px;padding:12px 14px;border:1px solid var(--line);background:#fff}
+    .alert.error{background:var(--red-soft);color:#7f1d1d;border-color:#fecaca}
+    .alert.info{background:var(--primary-soft);color:#1e3a8a;border-color:#bfdbfe}
+    .alert.ok{background:var(--green-soft);color:#14532d;border-color:#bbf7d0}
+    .switches{display:grid;gap:12px}
+    .switchrow{display:flex;justify-content:space-between;gap:12px;align-items:center;border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+    .question{margin-bottom:16px}
+    .option{border:1px solid var(--line);border-radius:16px;padding:12px 14px;margin-top:10px;background:#fff;transition:.15s ease}
+    .option:hover{border-color:#c7d2fe}
+    .option.selected{border-color:#93c5fd;background:#f8fbff}
+    .option.correct{border-color:#86efac;background:#f0fdf4}
+    .option.wrong{border-color:#fca5a5;background:#fef2f2}
+    .feedback{margin-top:12px;border:1px solid var(--line);border-radius:16px;padding:14px;background:#fafafa}
+    .feedback.correct{background:var(--green-soft);border-color:#bbf7d0}
+    .feedback.incorrect{background:var(--amber-soft);border-color:#fde68a}
+    .small{font-size:14px}
+    code.inline{background:#eef2ff;padding:2px 6px;border-radius:8px}
+    .topbar{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap}
+  </style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+<script>
+const SAMPLE_TSV = `No	Question	Option A	Option B	Option C	Option D	Correct Answer	Explanation	Supporting Excerpt
+1	Which statement about an ideal renal biomarker is appropriate?	It should show wide biologic variability and partial protein binding.	It should be easy to measure and cost-effective.	It should undergo substantial non-renal metabolism.	It should be secreted and reabsorbed by the tubules.	B	The chapter lists easy measurability and cost-effectiveness among the ideal properties of a renal biomarker.	The ideal properties of a renal biomarker include ... easy measurability, and cost-effectiveness.
+2	Which description of creatinine is correct?	Its production rate varies markedly from day to day and is independent of muscle mass.	It is synthesized mainly in the liver from ammonia.	It is a breakdown product of creatine and creatine phosphate in skeletal muscle.	It is reabsorbed extensively by the proximal tubule in dogs and cats.	C	Creatinine is described as a breakdown product of creatine and creatine phosphate in skeletal muscle.	Creatinine is a breakdown product of creatine and creatine phosphate in skeletal muscle.`;
+
+function escapeHtml(s=''){ return s.replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
+function norm(s=''){ return s.toLowerCase().replace(/[\s_\-・（）()]/g,'').replace(/：/g,'').trim(); }
+function safeEncode(obj){ return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
+function safeDecode(s){ return JSON.parse(decodeURIComponent(escape(atob(s)))); }
+function shuffleArray(arr){ const a = arr.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+
+function parseTSV(tsv){
+  const lines = tsv.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n").filter(x=>x.trim());
+  if(lines.length<2) throw new Error("TSVの行数が足りません。ヘッダー行と少なくとも1問分のデータが必要です。");
+  const headers = lines[0].split("\t").map(x=>x.trim());
+  const h = headers.map(norm);
+  const idx = (...cands)=>{ for(const c of cands){ const i=h.indexOf(norm(c)); if(i>=0) return i; } return -1; };
+  const map = {
+    no: idx("No","番号","questionno"),
+    q: idx("Question","問題","Question title","Questiontitle"),
+    a: idx("Option A","A","選択肢A"),
+    b: idx("Option B","B","選択肢B"),
+    c: idx("Option C","C","選択肢C"),
+    d: idx("Option D","D","選択肢D"),
+    correct: idx("Correct Answer","Correct","Answer","正答","正解","解答"),
+    explanation: idx("Explanation","解説","Feedback","Answer feedback"),
+    excerpt: idx("Supporting Excerpt","Excerpt","根拠","根拠本文抜粋","本文抜粋"),
   };
-
-  const idx = {
-    no: findIndex(["No", "番号", "q", "questionno"]),
-    question: findIndex(["Question", "問題", "Question title", "Questiontitle"]),
-    a: findIndex(["Option A", "A", "選択肢A", "choicea"]),
-    b: findIndex(["Option B", "B", "選択肢B", "choiceb"]),
-    c: findIndex(["Option C", "C", "選択肢C", "choicec"]),
-    d: findIndex(["Option D", "D", "選択肢D", "choiced"]),
-    correct: findIndex(["Correct Answer", "Correct", "Answer", "正答", "正解", "解答"]),
-    explanation: findIndex(["Explanation", "解説", "Feedback", "Answer feedback"]),
-    excerpt: findIndex(["Supporting Excerpt", "Excerpt", "根拠", "根拠本文抜粋", "本文抜粋"]),
-  };
-
-  const required = ["question", "a", "b", "c", "d", "correct"];
-  const missing = required.filter((key) => idx[key] === -1);
-  if (missing.length > 0) {
-    throw new Error(`必要な列が見つかりません: ${missing.join(", ")}`);
-  }
-
-  const rows = lines.slice(1).map((line, rowIndex) => {
+  const required = ["q","a","b","c","d","correct"].filter(k=>map[k]===-1);
+  if(required.length) throw new Error("必要な列が見つかりません: " + required.join(", "));
+  return lines.slice(1).map((line,i)=>{
     const cells = line.split("\t");
-    const correctRaw = (cells[idx.correct] || "").trim().toUpperCase();
-    const correct = ["A", "B", "C", "D"].includes(correctRaw) ? correctRaw : null;
-    if (!correct) {
-      throw new Error(`${rowIndex + 2}行目の正答がA/B/C/Dになっていません。`);
-    }
-
+    const correct = ((cells[map.correct]||"").trim().toUpperCase());
+    if(!["A","B","C","D"].includes(correct)) throw new Error((i+2)+"行目の正答がA/B/C/Dになっていません。");
     return {
-      id: `${cells[idx.no] || rowIndex + 1}`,
-      question: (cells[idx.question] || "").trim(),
-      options: {
-        A: (cells[idx.a] || "").trim(),
-        B: (cells[idx.b] || "").trim(),
-        C: (cells[idx.c] || "").trim(),
-        D: (cells[idx.d] || "").trim(),
-      },
+      id: (cells[map.no]||String(i+1)).trim(),
+      question: (cells[map.q]||"").trim(),
+      options: { A:(cells[map.a]||"").trim(), B:(cells[map.b]||"").trim(), C:(cells[map.c]||"").trim(), D:(cells[map.d]||"").trim() },
       correct,
-      explanation: idx.explanation >= 0 ? (cells[idx.explanation] || "").trim() : "",
-      excerpt: idx.excerpt >= 0 ? (cells[idx.excerpt] || "").trim() : "",
+      explanation: map.explanation>=0 ? (cells[map.explanation]||"").trim() : "",
+      excerpt: map.excerpt>=0 ? (cells[map.excerpt]||"").trim() : "",
     };
+  }).filter(r => r.question && r.options.A && r.options.B && r.options.C && r.options.D);
+}
+
+function buildQuestions(questions, shuffleQ, shuffleC){
+  let qs = questions.map(q=>{
+    let entries = Object.entries(q.options).map(([k,v])=>({orig:k, text:v}));
+    if(shuffleC) entries = shuffleArray(entries);
+    const displayOptions = {}, map = {};
+    ["A","B","C","D"].forEach((key, idx)=>{ displayOptions[key]=entries[idx].text; map[key]=entries[idx].orig; });
+    const displayCorrect = Object.keys(map).find(k => map[k]===q.correct) || q.correct;
+    return {...q, displayOptions, displayCorrect};
   });
-
-  return rows.filter((row) => row.question && row.options.A && row.options.B && row.options.C && row.options.D);
+  if(shuffleQ) qs = shuffleArray(qs);
+  return qs;
 }
 
-function shuffleArray(arr) {
-  const clone = [...arr];
-  for (let i = clone.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [clone[i], clone[j]] = [clone[j], clone[i]];
-  }
-  return clone;
+function getHashQuiz(){
+  const hash = location.hash.replace(/^#/,'');
+  if(!hash.startsWith('quiz=')) return null;
+  try{ return safeDecode(hash.slice(5)); }catch(e){ return null; }
 }
 
-function buildShuffledQuestions(questions, shuffleQuestions, shuffleChoices) {
-  const base = questions.map((q) => {
-    const entries = Object.entries(q.options).map(([key, text]) => ({ originalKey: key, text }));
-    const optionEntries = shuffleChoices ? shuffleArray(entries) : entries;
-    const newOptions = {};
-    const mapping = {};
-    ["A", "B", "C", "D"].forEach((displayKey, idx) => {
-      newOptions[displayKey] = optionEntries[idx].text;
-      mapping[displayKey] = optionEntries[idx].originalKey;
-    });
-    const newCorrect = Object.entries(mapping).find(([, originalKey]) => originalKey === q.correct)?.[0] || q.correct;
-    return {
-      ...q,
-      displayOptions: newOptions,
-      displayCorrect: newCorrect,
-    };
+const state = {
+  title:'Chapter Quiz', description:'Paste TSV to generate an answer page.',
+  tsv:'', questions:[], rendered:[], answers:{}, shareLink:'', error:'',
+  shuffleQuestions:false, shuffleChoices:false, mode:'builder'
+};
+
+function saveLocal(){
+  if(state.mode==='solver') return;
+  localStorage.setItem('quiz_builder_single_file_v2', JSON.stringify({
+    title:state.title, description:state.description, tsv:state.tsv, questions:state.questions,
+    shuffleQuestions:state.shuffleQuestions, shuffleChoices:state.shuffleChoices
+  }));
+}
+function loadLocal(){
+  const raw = localStorage.getItem('quiz_builder_single_file_v2');
+  if(!raw) return;
+  try{
+    const s = JSON.parse(raw);
+    state.title = s.title || state.title;
+    state.description = s.description || state.description;
+    state.tsv = s.tsv || '';
+    state.questions = Array.isArray(s.questions) ? s.questions : [];
+    state.shuffleQuestions = !!s.shuffleQuestions;
+    state.shuffleChoices = !!s.shuffleChoices;
+  }catch(e){}
+}
+function resetRendered(){ state.rendered = buildQuestions(state.questions, state.shuffleQuestions, state.shuffleChoices); state.answers = {}; }
+function makeShareLink(){
+  const payload = safeEncode({
+    title:state.title, description:state.description, questions:state.questions,
+    shuffleQuestions:state.shuffleQuestions, shuffleChoices:state.shuffleChoices
   });
-
-  return shuffleQuestions ? shuffleArray(base) : base;
+  state.shareLink = location.origin + location.pathname + '#quiz=' + payload;
 }
 
-function getHashData() {
-  if (typeof window === "undefined") return null;
-  const hash = window.location.hash.replace(/^#/, "");
-  if (!hash.startsWith("quiz=")) return null;
-  const payload = hash.slice(5);
-  try {
-    return JSON.parse(safeBase64Decode(payload));
-  } catch {
-    return null;
-  }
-}
-
-export default function QuizBuilderApp() {
-  const hashData = useMemo(() => getHashData(), []);
-  const solverMode = Boolean(hashData?.questions?.length);
-
-  const [title, setTitle] = useState(hashData?.title || "Chapter Quiz");
-  const [description, setDescription] = useState(hashData?.description || "Paste TSV to generate a quiz page.");
-  const [tsv, setTsv] = useState("");
-  const [questions, setQuestions] = useState(hashData?.questions || []);
-  const [error, setError] = useState("");
-  const [shuffleQuestions, setShuffleQuestions] = useState(hashData?.shuffleQuestions || false);
-  const [shuffleChoices, setShuffleChoices] = useState(hashData?.shuffleChoices || false);
-  const [renderedQuestions, setRenderedQuestions] = useState([]);
-  const [answers, setAnswers] = useState({});
-  const [shareLink, setShareLink] = useState("");
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (solverMode) return;
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    try {
-      const saved = JSON.parse(raw);
-      setTitle(saved.title || "Chapter Quiz");
-      setDescription(saved.description || "Paste TSV to generate a quiz page.");
-      setTsv(saved.tsv || "");
-      setQuestions(saved.questions || []);
-      setShuffleQuestions(Boolean(saved.shuffleQuestions));
-      setShuffleChoices(Boolean(saved.shuffleChoices));
-    } catch {
-      // ignore
-    }
-  }, [solverMode]);
-
-  useEffect(() => {
-    if (solverMode) return;
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ title, description, tsv, questions, shuffleQuestions, shuffleChoices })
-    );
-  }, [title, description, tsv, questions, shuffleQuestions, shuffleChoices, solverMode]);
-
-  useEffect(() => {
-    if (!questions.length) {
-      setRenderedQuestions([]);
-      return;
-    }
-    setRenderedQuestions(buildShuffledQuestions(questions, shuffleQuestions, shuffleChoices));
-    setAnswers({});
-  }, [questions, shuffleQuestions, shuffleChoices]);
-
-  const answeredCount = Object.keys(answers).length;
-  const score = renderedQuestions.reduce((acc, q) => acc + (answers[q.id] === q.displayCorrect ? 1 : 0), 0);
-
-  const handleGenerate = () => {
-    try {
-      const parsed = parseTSV(tsv);
-      setQuestions(parsed);
-      setError("");
-    } catch (e) {
-      setError(e.message || "TSVの解析に失敗しました。");
-    }
-  };
-
-  const handleLoadSample = () => {
-    setTsv(sampleTSV);
-    setError("");
-  };
-
-  const handleReset = () => {
-    setAnswers({});
-    setRenderedQuestions(buildShuffledQuestions(questions, shuffleQuestions, shuffleChoices));
-  };
-
-  const makeShareLink = () => {
-    if (!questions.length) return;
-    const payload = safeBase64Encode(
-      JSON.stringify({
-        title,
-        description,
-        questions,
-        shuffleQuestions,
-        shuffleChoices,
-      })
-    );
-    const url = `${window.location.origin}${window.location.pathname}#quiz=${payload}`;
-    setShareLink(url);
-  };
-
-  const copyShareLink = async () => {
-    if (!shareLink) return;
-    await navigator.clipboard.writeText(shareLink);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
-
-  const builderUrl = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}` : "";
-
-  if (solverMode) {
-    return (
-      <div className="min-h-screen bg-background p-4 md:p-8">
-        <div className="mx-auto max-w-5xl space-y-6">
-          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-            <Card className="rounded-2xl shadow-sm">
-              <CardHeader>
-                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                  <div>
-                    <CardTitle className="text-2xl">{title}</CardTitle>
-                    <CardDescription>{description}</CardDescription>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Badge variant="secondary" className="rounded-xl px-3 py-1">{renderedQuestions.length} questions</Badge>
-                    <Badge variant="secondary" className="rounded-xl px-3 py-1">{score} correct</Badge>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex flex-wrap gap-3">
-                  <Button variant="outline" onClick={handleReset} className="rounded-2xl">
-                    <RotateCcw className="mr-2 h-4 w-4" />
-                    Reset answers
-                  </Button>
-                  <Button variant="outline" onClick={() => setRenderedQuestions(buildShuffledQuestions(questions, shuffleQuestions, shuffleChoices))} className="rounded-2xl">
-                    <Shuffle className="mr-2 h-4 w-4" />
-                    Reshuffle
-                  </Button>
-                  <Button asChild variant="secondary" className="rounded-2xl">
-                    <a href={builderUrl}>
-                      <ExternalLink className="mr-2 h-4 w-4" />
-                      Open builder page
-                    </a>
-                  </Button>
-                </div>
-                <Alert className="rounded-2xl">
-                  <CheckCircle2 className="h-4 w-4" />
-                  <AlertTitle>Instant feedback mode</AlertTitle>
-                  <AlertDescription>
-                    選択肢を選ぶと、その場で正誤と解説が各問題の下に表示されます。全問提出は不要です。現在の回答数: {answeredCount}
-                  </AlertDescription>
-                </Alert>
-              </CardContent>
-            </Card>
-          </motion.div>
-
-          <div className="space-y-4">
-            {renderedQuestions.map((q, index) => {
-              const selected = answers[q.id];
-              const hasAnswered = Boolean(selected);
-              const isCorrect = selected === q.displayCorrect;
-              return (
-                <motion.div key={q.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-                  <Card className="rounded-2xl shadow-sm">
-                    <CardHeader>
-                      <CardTitle className="text-lg">Q{index + 1}. {q.question}</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-3">
-                      {Object.entries(q.displayOptions).map(([key, text]) => {
-                        const active = selected === key;
-                        const correct = hasAnswered && q.displayCorrect === key;
-                        const wrong = hasAnswered && active && q.displayCorrect !== key;
-                        return (
-                          <label
-                            key={key}
-                            className={`flex cursor-pointer items-start gap-3 rounded-2xl border p-4 transition ${
-                              correct
-                                ? "border-green-500"
-                                : wrong
-                                ? "border-red-500"
-                                : active
-                                ? "border-primary"
-                                : ""
-                            }`}
-                          >
-                            <input
-                              type="radio"
-                              name={`q-${q.id}`}
-                              value={key}
-                              checked={selected === key}
-                              onChange={() => setAnswers((prev) => ({ ...prev, [q.id]: key }))}
-                              className="mt-1"
-                            />
-                            <div className="space-y-1">
-                              <div className="font-medium">{key}. {text}</div>
-                              {hasAnswered && correct && <div className="text-sm text-green-700">Correct answer</div>}
-                              {hasAnswered && wrong && <div className="text-sm text-red-700">Your choice</div>}
-                            </div>
-                          </label>
-                        );
-                      })}
-
-                      {hasAnswered && (
-                        <div className="rounded-2xl border bg-muted/40 p-4 space-y-3">
-                          <div className="font-medium">
-                            {isCorrect ? "Correct" : `Incorrect · Correct answer: ${q.displayCorrect}`}
-                          </div>
-                          {q.explanation && (
-                            <div>
-                              <div className="text-sm font-medium mb-1">Explanation</div>
-                              <div className="text-sm text-muted-foreground whitespace-pre-wrap">{q.explanation}</div>
-                            </div>
-                          )}
-                          {q.excerpt && (
-                            <div>
-                              <div className="text-sm font-medium mb-1">Supporting excerpt</div>
-                              <div className="text-sm text-muted-foreground whitespace-pre-wrap">{q.excerpt}</div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                </motion.div>
-              );
-            })}
-          </div>
+function render(){
+  const app = document.getElementById('app');
+  if(state.mode==='solver'){
+    const answeredCount = Object.keys(state.answers).length;
+    const score = state.rendered.reduce((n,q)=> n + ((state.answers[q.id]||'')===q.displayCorrect ? 1 : 0), 0);
+    app.innerHTML = `
+      <div class="card">
+        <div class="topbar">
+          <div><h1>${escapeHtml(state.title)}</h1><p class="muted">${escapeHtml(state.description)}</p></div>
+          <div><span class="pill">${state.rendered.length} questions</span><span class="pill">${score} correct</span></div>
         </div>
+        <div class="btns">
+          <button class="secondary" id="resetAnswersBtn">Reset answers</button>
+          <button class="secondary" id="reshuffleBtn">Reshuffle</button>
+          <a class="buttonlink ghost" href="${escapeHtml(location.origin + location.pathname)}">Open builder page</a>
+        </div>
+        <div class="alert info" style="margin-top:12px;">選択肢を選ぶと、その問題のすぐ下に解答・解説が表示されます。現在の回答数: ${answeredCount}</div>
       </div>
-    );
+      ${state.rendered.map((q, idx)=>{
+        const selected = state.answers[q.id] || '';
+        const hasAnswered = !!selected;
+        const isCorrect = selected === q.displayCorrect;
+        return `
+          <div class="card question">
+            <h3>Q${idx+1}. ${escapeHtml(q.question)}</h3>
+            ${Object.entries(q.displayOptions).map(([key, text])=>{
+              let cls='option';
+              if(selected===key) cls+=' selected';
+              if(hasAnswered && q.displayCorrect===key) cls+=' correct';
+              if(hasAnswered && selected===key && q.displayCorrect!==key) cls+=' wrong';
+              return `<label class="${cls}"><input type="radio" name="q_${escapeHtml(q.id)}" value="${key}" ${selected===key?'checked':''}> <strong>${key}.</strong> ${escapeHtml(text)}</label>`;
+            }).join('')}
+            ${hasAnswered ? `<div class="feedback ${isCorrect ? 'correct':'incorrect'}">
+              <div><strong>${isCorrect ? 'Correct' : 'Incorrect'}</strong>${isCorrect ? '' : ` · Correct answer: ${escapeHtml(q.displayCorrect)}`}</div>
+              ${q.explanation ? `<div style="margin-top:8px;"><strong>Explanation</strong><div class="small">${escapeHtml(q.explanation)}</div></div>` : ''}
+              ${q.excerpt ? `<div style="margin-top:8px;"><strong>Supporting excerpt</strong><div class="small">${escapeHtml(q.excerpt)}</div></div>` : ''}
+            </div>` : ''}
+          </div>`;
+      }).join('')}
+    `;
+    document.getElementById('resetAnswersBtn').onclick = ()=>{ state.answers={}; render(); };
+    document.getElementById('reshuffleBtn').onclick = ()=>{ resetRendered(); render(); };
+    state.rendered.forEach(q=>{
+      document.querySelectorAll(`input[name="q_${CSS.escape(q.id)}"]`).forEach(el=>{
+        el.addEventListener('change', e=>{ state.answers[q.id]=e.target.value; render(); });
+      });
+    });
+    return;
   }
 
-  return (
-    <div className="min-h-screen bg-background p-4 md:p-8">
-      <div className="mx-auto max-w-6xl space-y-6">
-        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-          <Card className="rounded-2xl shadow-sm">
-            <CardHeader>
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <CardTitle className="text-2xl">Quiz Builder</CardTitle>
-                  <CardDescription>
-                    TSVを貼ってクイズを作成し、回答専用ページ用の共有リンクを生成します。
-                  </CardDescription>
-                </div>
-                <Badge variant="secondary" className="w-fit rounded-xl px-3 py-1">
-                  Builder page
-                </Badge>
-              </div>
-            </CardHeader>
-          </Card>
-        </motion.div>
-
-        <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-          <Card className="rounded-2xl shadow-sm">
-            <CardHeader>
-              <CardTitle className="text-xl">1. Quiz data</CardTitle>
-              <CardDescription>
-                既存のTSVをここへ貼り付けます。列は No / Question / Option A-D / Correct Answer が必須です。
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>Quiz title</Label>
-                  <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Chapter 62 Quiz" />
-                </div>
-                <div className="space-y-2">
-                  <Label>Description</Label>
-                  <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Short description" />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label>TSV</Label>
-                <Textarea
-                  value={tsv}
-                  onChange={(e) => setTsv(e.target.value)}
-                  placeholder="Paste TSV here"
-                  className="min-h-[360px] font-mono text-sm"
-                />
-              </div>
-
-              <div className="flex flex-wrap gap-3">
-                <Button onClick={handleGenerate} className="rounded-2xl">
-                  <Upload className="mr-2 h-4 w-4" />
-                  Generate quiz data
-                </Button>
-                <Button variant="secondary" onClick={handleLoadSample} className="rounded-2xl">
-                  <FileText className="mr-2 h-4 w-4" />
-                  Load sample TSV
-                </Button>
-              </div>
-
-              {error && (
-                <Alert variant="destructive" className="rounded-2xl">
-                  <CircleAlert className="h-4 w-4" />
-                  <AlertTitle>TSV error</AlertTitle>
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-2xl shadow-sm">
-            <CardHeader>
-              <CardTitle className="text-xl">2. Answer page settings</CardTitle>
-              <CardDescription>
-                このページは作成専用です。共有リンクを開いた先は回答専用ページになり、問題アップ欄は表示されません。
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-5">
-              <div className="grid gap-4">
-                <div className="flex items-center justify-between rounded-2xl border p-4">
-                  <div>
-                    <div className="font-medium">Shuffle question order</div>
-                    <div className="text-sm text-muted-foreground">回答ページ表示時の問題順をランダム化します。</div>
-                  </div>
-                  <Switch checked={shuffleQuestions} onCheckedChange={setShuffleQuestions} />
-                </div>
-                <div className="flex items-center justify-between rounded-2xl border p-4">
-                  <div>
-                    <div className="font-medium">Shuffle choice order</div>
-                    <div className="text-sm text-muted-foreground">選択肢順をランダム化し、正答も追従させます。</div>
-                  </div>
-                  <Switch checked={shuffleChoices} onCheckedChange={setShuffleChoices} />
-                </div>
-              </div>
-
-              <Separator />
-
-              <div className="space-y-3">
-                <Button onClick={makeShareLink} variant="outline" disabled={!questions.length} className="rounded-2xl">
-                  <Link2 className="mr-2 h-4 w-4" />
-                  Create answer-page link
-                </Button>
-                {shareLink && (
-                  <div className="space-y-2">
-                    <Textarea value={shareLink} readOnly className="min-h-[120px] text-xs" />
-                    <div className="flex flex-wrap gap-3">
-                      <Button onClick={copyShareLink} className="rounded-2xl">
-                        <Copy className="mr-2 h-4 w-4" />
-                        {copied ? "Copied" : "Copy link"}
-                      </Button>
-                      <Button asChild variant="secondary" className="rounded-2xl">
-                        <a href={shareLink} target="_blank" rel="noreferrer">
-                          <ExternalLink className="mr-2 h-4 w-4" />
-                          Open answer page
-                        </a>
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <Alert className="rounded-2xl">
-                <CheckCircle2 className="h-4 w-4" />
-                <AlertTitle>Immediate explanations</AlertTitle>
-                <AlertDescription>
-                  回答ページでは、各問で選択肢を選んだ瞬間に、その問題の直下へ正誤・解説・根拠抜粋が表示されます。
-                </AlertDescription>
-              </Alert>
-            </CardContent>
-          </Card>
-        </div>
+  app.innerHTML = `
+    <div class="card">
+      <div class="topbar">
+        <div><h1>Quiz Builder</h1><p class="muted">TSVを貼ってクイズを作成し、回答専用ページのリンクを作ります。</p></div>
+        <div><span class="pill">Builder page</span></div>
       </div>
     </div>
-  );
+    <div class="card">
+      <h2>1. Quiz data</h2>
+      <p class="muted">列は <code class="inline">No</code> / <code class="inline">Question</code> / <code class="inline">Option A-D</code> / <code class="inline">Correct Answer</code> が必須です。</p>
+      <div class="row">
+        <div><label for="title">Quiz title</label><input id="title" type="text" value="${escapeHtml(state.title)}"></div>
+        <div><label for="description">Description</label><input id="description" type="text" value="${escapeHtml(state.description)}"></div>
+      </div>
+      <div style="margin-top:14px;"><label for="tsv">TSV</label><textarea id="tsv">${escapeHtml(state.tsv)}</textarea></div>
+      <div class="btns">
+        <button id="generateBtn">Generate quiz data</button>
+        <button class="secondary" id="sampleBtn">Load sample TSV</button>
+      </div>
+      ${state.error ? `<div class="alert error" style="margin-top:12px;">${escapeHtml(state.error)}</div>` : ''}
+    </div>
+    <div class="card">
+      <h2>2. Answer page settings</h2>
+      <p class="muted">共有リンクの先は回答専用ページになります。問題アップ欄は表示されません。</p>
+      <div class="switches">
+        <label class="switchrow"><span><strong>Shuffle question order</strong><br><span class="muted small">回答ページ表示時の問題順をランダム化します。</span></span><input id="shuffleQ" type="checkbox" ${state.shuffleQuestions ? 'checked' : ''}></label>
+        <label class="switchrow"><span><strong>Shuffle choice order</strong><br><span class="muted small">選択肢順をランダム化し、正答も追従させます。</span></span><input id="shuffleC" type="checkbox" ${state.shuffleChoices ? 'checked' : ''}></label>
+      </div>
+      <div class="btns"><button class="secondary" id="createLinkBtn" ${state.questions.length ? '' : 'disabled'}>Create answer-page link</button></div>
+      ${state.shareLink ? `<div style="margin-top:12px;">
+        <label for="shareLink">Answer-page link</label>
+        <textarea id="shareLink" readonly style="min-height:120px;">${escapeHtml(state.shareLink)}</textarea>
+        <div class="btns">
+          <button id="copyLinkBtn">Copy link</button>
+          <a class="buttonlink ghost" href="${escapeHtml(state.shareLink)}" target="_blank" rel="noreferrer">Open answer page</a>
+        </div>
+      </div>` : ''}
+      <div class="alert ok" style="margin-top:12px;">回答ページでは、各問で選択肢を選んだ瞬間に、その問題の直下へ正誤・解説・根拠抜粋が表示されます。</div>
+    </div>
+  `;
+
+  document.getElementById('title').addEventListener('input', e=>{ state.title=e.target.value; saveLocal(); });
+  document.getElementById('description').addEventListener('input', e=>{ state.description=e.target.value; saveLocal(); });
+  document.getElementById('tsv').addEventListener('input', e=>{ state.tsv=e.target.value; saveLocal(); });
+  document.getElementById('shuffleQ').addEventListener('change', e=>{ state.shuffleQuestions=e.target.checked; saveLocal(); });
+  document.getElementById('shuffleC').addEventListener('change', e=>{ state.shuffleChoices=e.target.checked; saveLocal(); });
+  document.getElementById('sampleBtn').onclick = ()=>{ state.tsv=SAMPLE_TSV; state.error=''; saveLocal(); render(); };
+  document.getElementById('generateBtn').onclick = ()=>{
+    try{
+      state.questions = parseTSV(document.getElementById('tsv').value);
+      state.error=''; state.shareLink=''; saveLocal(); alert('クイズデータを読み込みました。次に Create answer-page link を押してください。'); render();
+    }catch(e){ state.error=e.message || 'TSVの解析に失敗しました。'; render(); }
+  };
+  const linkBtn = document.getElementById('createLinkBtn');
+  if(linkBtn){ linkBtn.onclick = ()=>{ makeShareLink(); render(); }; }
+  const copyBtn = document.getElementById('copyLinkBtn');
+  if(copyBtn){ copyBtn.onclick = async ()=>{ try{ await navigator.clipboard.writeText(state.shareLink); copyBtn.textContent='Copied'; setTimeout(()=>copyBtn.textContent='Copy link',1400); }catch(e){} }; }
 }
+
+(function init(){
+  const hashQuiz = getHashQuiz();
+  if(hashQuiz && hashQuiz.questions){
+    state.mode='solver';
+    state.title = hashQuiz.title || state.title;
+    state.description = hashQuiz.description || state.description;
+    state.questions = Array.isArray(hashQuiz.questions) ? hashQuiz.questions : [];
+    state.shuffleQuestions = !!hashQuiz.shuffleQuestions;
+    state.shuffleChoices = !!hashQuiz.shuffleChoices;
+    resetRendered();
+  }else{
+    loadLocal();
+    if(state.questions.length) resetRendered();
+  }
+  render();
+})();
+</script>
+</body>
+</html>
