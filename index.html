@@ -13,18 +13,24 @@
     }
     *{box-sizing:border-box}
     body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
-    .wrap{max-width:980px;margin:0 auto;padding:24px}
+    .wrap{max-width:1040px;margin:0 auto;padding:24px}
     .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;margin-bottom:18px}
     h1,h2,h3{margin:0 0 10px 0;line-height:1.25}
     h1{font-size:30px} h2{font-size:22px} h3{font-size:18px}
-    p{margin:8px 0}.muted{color:var(--muted)}
+    p{margin:8px 0}
+    .muted{color:var(--muted)}
     .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-    @media (max-width:700px){.row{grid-template-columns:1fr}}
+    @media (max-width:780px){.row{grid-template-columns:1fr}}
     label{display:block;font-weight:600;margin-bottom:6px}
-    input[type="text"], textarea, input[type="file"]{width:100%;border:1px solid var(--line);border-radius:14px;padding:12px 14px;font:inherit;background:#fff}
-    textarea{min-height:320px;resize:vertical}
+    input[type="text"], textarea, input[type="file"]{
+      width:100%;border:1px solid var(--line);border-radius:14px;padding:12px 14px;font:inherit;background:#fff
+    }
+    textarea{min-height:300px;resize:vertical}
     .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
-    button,.buttonlink{border:none;background:var(--primary);color:#fff;border-radius:14px;padding:11px 16px;font:inherit;font-weight:700;cursor:pointer;text-decoration:none;display:inline-block}
+    button,.buttonlink{
+      border:none;background:var(--primary);color:#fff;border-radius:14px;padding:11px 16px;
+      font:inherit;font-weight:700;cursor:pointer;text-decoration:none;display:inline-block
+    }
     button.secondary,.buttonlink.secondary{background:#fff;color:var(--text);border:1px solid var(--line)}
     button.ghost,.buttonlink.ghost{background:#eef2ff;color:#1e3a8a}
     button:disabled{opacity:.55;cursor:not-allowed}
@@ -45,60 +51,42 @@
     .feedback.correct{background:var(--green-soft);border-color:#bbf7d0}
     .feedback.incorrect{background:var(--amber-soft);border-color:#fde68a}
     .small{font-size:14px}
-    code.inline{background:#eef2ff;padding:2px 6px;border-radius:8px}
     .topbar{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap}
+    .dropzone{border:2px dashed #bfdbfe;border-radius:16px;padding:18px;text-align:center;background:#f8fbff;transition:.15s ease}
+    .dropzone.drag{background:#eff6ff;border-color:#60a5fa}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
   </style>
 </head>
 <body>
 <div class="wrap" id="app"></div>
 <script>
+const DEFAULT_SUPABASE_URL = "https://pkabndydlnpjpfyxkaao.supabase.co";
+const DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_5DSYUyEVrvTSOspr9LTN4w_RByBkdyp";
+const STORAGE_KEY = "quiz_builder_supabase_v1";
 const SAMPLE_TSV = `No\tQuestion\tOption A\tOption B\tOption C\tOption D\tCorrect Answer\tExplanation\tSupporting Excerpt
 1\tWhich statement about an ideal renal biomarker is appropriate?\tIt should show wide biologic variability and partial protein binding.\tIt should be easy to measure and cost-effective.\tIt should undergo substantial non-renal metabolism.\tIt should be secreted and reabsorbed by the tubules.\tB\tThe chapter lists easy measurability and cost-effectiveness among the ideal properties of a renal biomarker.\tThe ideal properties of a renal biomarker include ... easy measurability, and cost-effectiveness.
 2\tWhich description of creatinine is correct?\tIts production rate varies markedly from day to day and is independent of muscle mass.\tIt is synthesized mainly in the liver from ammonia.\tIt is a breakdown product of creatine and creatine phosphate in skeletal muscle.\tIt is reabsorbed extensively by the proximal tubule in dogs and cats.\tC\tCreatinine is described as a breakdown product of creatine and creatine phosphate in skeletal muscle.\tCreatinine is a breakdown product of creatine and creatine phosphate in skeletal muscle.`;
 
-function escapeHtml(s=''){ return s.replace(/[&<>\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch])); }
+function escapeHtml(s=''){ return s.replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
 function norm(s=''){ return s.toLowerCase().replace(/[\s_\-・（）()]/g,'').replace(/：/g,'').trim(); }
-function shuffleArray(arr){ const a = arr.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
-
-function bytesToBase64Url(bytes){
-  let binary = '';
-  const chunk = 0x8000;
-  for(let i=0;i<bytes.length;i+=chunk){
-    binary += String.fromCharCode(...bytes.subarray(i, i+chunk));
+function slugify(s=''){
+  return s.toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^\w\s-]/g,'')
+    .trim()
+    .replace(/\s+/g,'-')
+    .replace(/-+/g,'-')
+    .replace(/^-|-$/g,'')
+    .slice(0, 80);
+}
+function shuffleArray(arr){
+  const a = arr.slice();
+  for(let i=a.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [a[i],a[j]]=[a[j],a[i]];
   }
-  return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  return a;
 }
-function base64UrlToBytes(base64url){
-  const padded = base64url.replace(/-/g,'+').replace(/_/g,'/') + '==='.slice((base64url.length + 3) % 4);
-  const binary = atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for(let i=0;i<binary.length;i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-async function compressString(str){
-  if (!('CompressionStream' in window)) {
-    throw new Error('このブラウザでは圧縮共有が使えません。');
-  }
-  const cs = new CompressionStream('gzip');
-  const writer = cs.writable.getWriter();
-  writer.write(new TextEncoder().encode(str));
-  writer.close();
-  const compressed = await new Response(cs.readable).arrayBuffer();
-  return bytesToBase64Url(new Uint8Array(compressed));
-}
-async function decompressString(base64url){
-  if (!('DecompressionStream' in window)) {
-    throw new Error('このブラウザでは圧縮共有が使えません。');
-  }
-  const bytes = base64UrlToBytes(base64url);
-  const ds = new DecompressionStream('gzip');
-  const writer = ds.writable.getWriter();
-  writer.write(bytes);
-  writer.close();
-  const decompressed = await new Response(ds.readable).arrayBuffer();
-  return new TextDecoder().decode(decompressed);
-}
-
 function parseTSV(tsv){
   const lines = tsv.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n").filter(x=>x.trim());
   if(lines.length<2) throw new Error("TSVの行数が足りません。ヘッダー行と少なくとも1問分のデータが必要です。");
@@ -132,7 +120,6 @@ function parseTSV(tsv){
     };
   }).filter(r => r.question && r.options.A && r.options.B && r.options.C && r.options.D);
 }
-
 function buildQuestions(questions, shuffleQ, shuffleC){
   let qs = questions.map(q=>{
     let entries = Object.entries(q.options).map(([k,v])=>({orig:k, text:v}));
@@ -145,101 +132,124 @@ function buildQuestions(questions, shuffleQ, shuffleC){
   if(shuffleQ) qs = shuffleArray(qs);
   return qs;
 }
-
-async function getHashQuiz(){
-  const hash = location.hash.replace(/^#/,'');
-  if(hash.startsWith('quizz=')){
-    try{
-      const json = await decompressString(hash.slice(6));
-      return JSON.parse(json);
-    }catch(e){
-      console.error(e);
-      return {__error:"共有リンクの展開に失敗しました。リンクが壊れているか、ブラウザが圧縮共有に未対応です。"};
-    }
-  }
-  if(hash.startsWith('quiz=')){
-    try{
-      const padded = hash.slice(5);
-      const json = decodeURIComponent(escape(atob(padded)));
-      return JSON.parse(json);
-    }catch(e){
-      return {__error:"旧形式リンクの読み込みに失敗しました。"};
-    }
-  }
-  return null;
-}
-
 const state = {
-  title:'Chapter Quiz', description:'Paste TSV to generate an answer page.',
-  tsv:'', questions:[], rendered:[], answers:{}, shareLink:'', error:'',
-  shuffleQuestions:false, shuffleChoices:false, mode:'builder', status:''
+  mode: 'builder',
+  title: 'Chapter Quiz',
+  description: 'Paste or drop a TSV file to create a quiz.',
+  slug: '',
+  tsv: '',
+  questions: [],
+  rendered: [],
+  answers: {},
+  error: '',
+  status: '',
+  shareLink: '',
+  shuffleQuestions: false,
+  shuffleChoices: false,
+  supabaseUrl: DEFAULT_SUPABASE_URL,
+  supabaseKey: DEFAULT_SUPABASE_PUBLISHABLE_KEY,
 };
-
 function saveLocal(){
-  if(state.mode==='solver') return;
-  localStorage.setItem('quiz_builder_single_file_v3', JSON.stringify({
-    title:state.title, description:state.description, tsv:state.tsv, questions:state.questions,
-    shuffleQuestions:state.shuffleQuestions, shuffleChoices:state.shuffleChoices
+  if(state.mode === 'solver') return;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    title: state.title, description: state.description, slug: state.slug, tsv: state.tsv,
+    questions: state.questions, shuffleQuestions: state.shuffleQuestions, shuffleChoices: state.shuffleChoices,
+    supabaseUrl: state.supabaseUrl, supabaseKey: state.supabaseKey,
   }));
 }
 function loadLocal(){
-  const raw = localStorage.getItem('quiz_builder_single_file_v3');
+  const raw = localStorage.getItem(STORAGE_KEY);
   if(!raw) return;
   try{
     const s = JSON.parse(raw);
     state.title = s.title || state.title;
     state.description = s.description || state.description;
+    state.slug = s.slug || state.slug;
     state.tsv = s.tsv || '';
     state.questions = Array.isArray(s.questions) ? s.questions : [];
     state.shuffleQuestions = !!s.shuffleQuestions;
     state.shuffleChoices = !!s.shuffleChoices;
+    state.supabaseUrl = s.supabaseUrl || state.supabaseUrl;
+    state.supabaseKey = s.supabaseKey || state.supabaseKey;
   }catch(e){}
 }
-function resetRendered(){ state.rendered = buildQuestions(state.questions, state.shuffleQuestions, state.shuffleChoices); state.answers = {}; }
-async function makeShareLink(){
-  const payload = {
-    title:state.title, description:state.description, questions:state.questions,
-    shuffleQuestions:state.shuffleQuestions, shuffleChoices:state.shuffleChoices
-  };
-  const compressed = await compressString(JSON.stringify(payload));
-  state.shareLink = location.origin + location.pathname + '#quizz=' + compressed;
+function resetRendered(){
+  state.rendered = buildQuestions(state.questions, state.shuffleQuestions, state.shuffleChoices);
+  state.answers = {};
 }
-function downloadQuizFile(){
-  const payload = {
-    title:state.title, description:state.description, questions:state.questions,
-    shuffleQuestions:state.shuffleQuestions, shuffleChoices:state.shuffleChoices
-  };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = (state.title || 'quiz').replace(/[^\w\-]+/g,'_') + '.quiz.json';
-  document.body.appendChild(a);
-  a.click();
-  URL.revokeObjectURL(a.href);
-  a.remove();
+function getSlugFromQuery(){
+  const p = new URLSearchParams(location.search);
+  return p.get('quiz');
 }
-async function loadQuizFile(file){
-  const text = await file.text();
-  const payload = JSON.parse(text);
-  if(!payload.questions || !Array.isArray(payload.questions)) throw new Error('クイズファイルの形式を認識できませんでした。');
-  state.title = payload.title || state.title;
-  state.description = payload.description || state.description;
-  state.questions = payload.questions;
-  state.shuffleQuestions = !!payload.shuffleQuestions;
-  state.shuffleChoices = !!payload.shuffleChoices;
-  saveLocal();
+async function supabaseRequest(path, {method='GET', body=null}={}){
+  const headers = {
+    'apikey': state.supabaseKey,
+    'Authorization': 'Bearer ' + state.supabaseKey,
+  };
+  if(body !== null) headers['Content-Type'] = 'application/json';
+  const res = await fetch(state.supabaseUrl + path, {
+    method, headers, body: body !== null ? JSON.stringify(body) : undefined,
+  });
+  if(!res.ok){
+    let text = await res.text();
+    throw new Error(`Supabase error ${res.status}: ${text}`);
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
+async function saveQuizToSupabase(){
+  if(!state.questions.length) throw new Error('先にTSVを読み込んでください。');
+  const slug = state.slug || slugify(state.title);
+  if(!slug) throw new Error('slug を入力してください。');
+  const payload = {
+    slug,
+    title: state.title,
+    description: state.description,
+    quiz_data: {
+      title: state.title,
+      description: state.description,
+      shuffleQuestions: state.shuffleQuestions,
+      shuffleChoices: state.shuffleChoices,
+      questions: state.questions,
+    }
+  };
+  const existing = await supabaseRequest(`/rest/v1/quizzes?slug=eq.${encodeURIComponent(slug)}&select=id`, {method:'GET'});
+  if(Array.isArray(existing) && existing.length > 0){
+    throw new Error('この slug はすでに存在します。別の slug にしてください。');
+  }
+  await supabaseRequest('/rest/v1/quizzes', {method:'POST', body: payload});
+  state.slug = slug;
+  state.shareLink = `${location.origin}${location.pathname}?quiz=${encodeURIComponent(slug)}`;
+}
+async function loadQuizFromSupabase(slug){
+  const data = await supabaseRequest(`/rest/v1/quizzes?slug=eq.${encodeURIComponent(slug)}&select=slug,title,description,quiz_data`);
+  if(!Array.isArray(data) || data.length === 0){
+    throw new Error('指定されたクイズが見つかりませんでした。');
+  }
+  const row = data[0];
+  const qd = row.quiz_data || {};
+  state.mode = 'solver';
+  state.title = qd.title || row.title || 'Quiz';
+  state.description = qd.description || row.description || '';
+  state.slug = row.slug;
+  state.questions = Array.isArray(qd.questions) ? qd.questions : [];
+  state.shuffleQuestions = !!qd.shuffleQuestions;
+  state.shuffleChoices = !!qd.shuffleChoices;
   resetRendered();
 }
-
 function render(){
   const app = document.getElementById('app');
-  if(state.mode==='solver'){
+  if(state.mode === 'solver'){
     const answeredCount = Object.keys(state.answers).length;
     const score = state.rendered.reduce((n,q)=> n + ((state.answers[q.id]||'')===q.displayCorrect ? 1 : 0), 0);
     app.innerHTML = `
       <div class="card">
         <div class="topbar">
-          <div><h1>${escapeHtml(state.title)}</h1><p class="muted">${escapeHtml(state.description)}</p></div>
+          <div>
+            <h1>${escapeHtml(state.title)}</h1>
+            <p class="muted">${escapeHtml(state.description)}</p>
+            ${state.slug ? `<p class="small muted">slug: <span class="mono">${escapeHtml(state.slug)}</span></p>` : ''}
+          </div>
           <div><span class="pill">${state.rendered.length} questions</span><span class="pill">${score} correct</span></div>
         </div>
         <div class="btns">
@@ -271,31 +281,48 @@ function render(){
           </div>`;
       }).join('')}
     `;
-    document.getElementById('resetAnswersBtn').onclick = ()=>{ state.answers={}; render(); };
+    document.getElementById('resetAnswersBtn').onclick = ()=>{ state.answers = {}; render(); };
     document.getElementById('reshuffleBtn').onclick = ()=>{ resetRendered(); render(); };
     state.rendered.forEach(q=>{
       document.querySelectorAll(`input[name="q_${CSS.escape(q.id)}"]`).forEach(el=>{
-        el.addEventListener('change', e=>{ state.answers[q.id]=e.target.value; render(); });
+        el.addEventListener('change', e=>{ state.answers[q.id] = e.target.value; render(); });
       });
     });
     return;
   }
-
   app.innerHTML = `
     <div class="card">
       <div class="topbar">
-        <div><h1>Quiz Builder</h1><p class="muted">TSVを貼ってクイズを作成し、回答専用ページのリンクかクイズファイルを作ります。</p></div>
-        <div><span class="pill">Builder page</span></div>
+        <div>
+          <h1>Quiz Builder</h1>
+          <p class="muted">TSVを貼るかドラッグ&ドロップしてクイズを作り、Supabaseへ保存して短いリンクを発行します。</p>
+        </div>
+        <div><span class="pill">Supabase mode</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>0. Supabase connection</h2>
+      <p class="muted">URL と publishable key を初期入力済みにしています。必要ならここで変更できます。</p>
+      <div class="row">
+        <div><label for="supabaseUrl">Supabase API URL</label><input id="supabaseUrl" type="text" value="${escapeHtml(state.supabaseUrl)}"></div>
+        <div><label for="supabaseKey">Supabase publishable key</label><input id="supabaseKey" type="text" value="${escapeHtml(state.supabaseKey)}"></div>
       </div>
     </div>
     <div class="card">
       <h2>1. Quiz data</h2>
-      <p class="muted">列は <code class="inline">No</code> / <code class="inline">Question</code> / <code class="inline">Option A-D</code> / <code class="inline">Correct Answer</code> が必須です。</p>
       <div class="row">
         <div><label for="title">Quiz title</label><input id="title" type="text" value="${escapeHtml(state.title)}"></div>
-        <div><label for="description">Description</label><input id="description" type="text" value="${escapeHtml(state.description)}"></div>
+        <div><label for="slug">Slug</label><input id="slug" type="text" value="${escapeHtml(state.slug)}" placeholder="chapter-62-en"></div>
       </div>
-      <div style="margin-top:14px;"><label for="tsv">TSV</label><textarea id="tsv">${escapeHtml(state.tsv)}</textarea></div>
+      <div style="margin-top:14px;"><label for="description">Description</label><input id="description" type="text" value="${escapeHtml(state.description)}"></div>
+      <div style="margin-top:14px;">
+        <div class="dropzone" id="dropzone">
+          <strong>TSV file drag & drop</strong>
+          <div class="small muted">または下のボタンから選択。TSVファイルの内容は自動で読み込まれます。</div>
+          <div class="btns" style="justify-content:center;"><input id="tsvFile" type="file" accept=".tsv,text/tab-separated-values,text/plain"></div>
+        </div>
+      </div>
+      <div style="margin-top:14px;"><label for="tsv">TSV text</label><textarea id="tsv">${escapeHtml(state.tsv)}</textarea></div>
       <div class="btns">
         <button id="generateBtn">Generate quiz data</button>
         <button class="secondary" id="sampleBtn">Load sample TSV</button>
@@ -304,102 +331,116 @@ function render(){
       ${state.status ? `<div class="alert ok" style="margin-top:12px;">${escapeHtml(state.status)}</div>` : ''}
     </div>
     <div class="card">
-      <h2>2. Answer page sharing</h2>
-      <p class="muted">共有リンクは gzip 圧縮して以前より短くしています。さらに扱いやすさ重視なら、下のクイズファイル共有が便利です。</p>
+      <h2>2. Answer page settings</h2>
       <div class="switches">
         <label class="switchrow"><span><strong>Shuffle question order</strong><br><span class="muted small">回答ページ表示時の問題順をランダム化します。</span></span><input id="shuffleQ" type="checkbox" ${state.shuffleQuestions ? 'checked' : ''}></label>
         <label class="switchrow"><span><strong>Shuffle choice order</strong><br><span class="muted small">選択肢順をランダム化し、正答も追従させます。</span></span><input id="shuffleC" type="checkbox" ${state.shuffleChoices ? 'checked' : ''}></label>
       </div>
-      <div class="btns">
-        <button class="secondary" id="createLinkBtn" ${state.questions.length ? '' : 'disabled'}>Create compressed answer-page link</button>
-        <button class="secondary" id="downloadQuizBtn" ${state.questions.length ? '' : 'disabled'}>Download quiz file</button>
-      </div>
+      <div class="btns"><button class="secondary" id="saveBtn" ${state.questions.length ? '' : 'disabled'}>Save quiz to Supabase</button></div>
       ${state.shareLink ? `<div style="margin-top:12px;">
-        <label for="shareLink">Compressed answer-page link</label>
-        <textarea id="shareLink" readonly style="min-height:120px;">${escapeHtml(state.shareLink)}</textarea>
+        <label for="shareLink">Short share link</label>
+        <input id="shareLink" type="text" readonly value="${escapeHtml(state.shareLink)}">
         <div class="btns">
           <button id="copyLinkBtn">Copy link</button>
           <a class="buttonlink ghost" href="${escapeHtml(state.shareLink)}" target="_blank" rel="noreferrer">Open answer page</a>
         </div>
       </div>` : ''}
-      <div style="margin-top:14px;">
-        <label for="quizFile">Load shared quiz file</label>
-        <input id="quizFile" type="file" accept=".json,.quiz.json,application/json">
-      </div>
-      <div class="alert ok" style="margin-top:12px;">回答ページでは、各問で選択肢を選んだ瞬間に、その問題の直下へ正誤・解説・根拠抜粋が表示されます。</div>
+      <div class="alert ok" style="margin-top:12px;">保存後のリンクは <span class="mono">?quiz=slug</span> 形式なので、URLがかなり扱いやすくなります。</div>
     </div>
   `;
-
-  document.getElementById('title').addEventListener('input', e=>{ state.title=e.target.value; saveLocal(); });
-  document.getElementById('description').addEventListener('input', e=>{ state.description=e.target.value; saveLocal(); });
-  document.getElementById('tsv').addEventListener('input', e=>{ state.tsv=e.target.value; saveLocal(); });
-  document.getElementById('shuffleQ').addEventListener('change', e=>{ state.shuffleQuestions=e.target.checked; saveLocal(); });
-  document.getElementById('shuffleC').addEventListener('change', e=>{ state.shuffleChoices=e.target.checked; saveLocal(); });
-  document.getElementById('sampleBtn').onclick = ()=>{ state.tsv=SAMPLE_TSV; state.error=''; state.status=''; saveLocal(); render(); };
+  ['supabaseUrl','supabaseKey','title','slug','description','tsv'].forEach(id=>{
+    document.getElementById(id).addEventListener('input', e=>{
+      state[id] = e.target.value;
+      if(id === 'title' && (!state.slug || state.slug === slugify(state.title))) state.slug = slugify(e.target.value);
+      saveLocal();
+    });
+  });
+  document.getElementById('shuffleQ').addEventListener('change', e=>{ state.shuffleQuestions = e.target.checked; saveLocal(); });
+  document.getElementById('shuffleC').addEventListener('change', e=>{ state.shuffleChoices = e.target.checked; saveLocal(); });
+  document.getElementById('sampleBtn').onclick = ()=>{
+    state.tsv = SAMPLE_TSV;
+    if(!state.slug) state.slug = slugify(state.title);
+    state.error = '';
+    state.status = '';
+    saveLocal();
+    render();
+  };
+  const readFile = async (file)=>{
+    state.tsv = await file.text();
+    state.error = '';
+    state.status = `${file.name} を読み込みました。`;
+    saveLocal();
+    render();
+  };
+  document.getElementById('tsvFile').addEventListener('change', async (e)=>{
+    const file = e.target.files && e.target.files[0];
+    if(file) await readFile(file);
+  });
+  const dz = document.getElementById('dropzone');
+  ['dragenter','dragover'].forEach(evt=>dz.addEventListener(evt, e=>{ e.preventDefault(); dz.classList.add('drag'); }));
+  ['dragleave','drop'].forEach(evt=>dz.addEventListener(evt, e=>{ e.preventDefault(); dz.classList.remove('drag'); }));
+  dz.addEventListener('drop', async (e)=>{
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if(file) await readFile(file);
+  });
   document.getElementById('generateBtn').onclick = ()=>{
     try{
       state.questions = parseTSV(document.getElementById('tsv').value);
-      state.error=''; state.shareLink=''; state.status='クイズデータを読み込みました。';
-      saveLocal(); render();
-    }catch(e){ state.error=e.message || 'TSVの解析に失敗しました。'; state.status=''; render(); }
-  };
-  const linkBtn = document.getElementById('createLinkBtn');
-  if(linkBtn){ linkBtn.onclick = async ()=>{
-    try{
-      state.status='リンクを圧縮中です...';
-      render();
-      await makeShareLink();
-      state.status='圧縮リンクを作成しました。';
+      if(!state.slug) state.slug = slugify(document.getElementById('title').value);
+      state.error = '';
+      state.status = `クイズデータを読み込みました。${state.questions.length}問を認識しました。`;
+      state.shareLink = '';
+      saveLocal();
       render();
     }catch(e){
-      state.status='';
-      state.error = e.message || '圧縮リンクの作成に失敗しました。';
+      state.error = e.message || 'TSVの解析に失敗しました。';
+      state.status = '';
       render();
     }
-  }; }
-  const dlBtn = document.getElementById('downloadQuizBtn');
-  if(dlBtn){ dlBtn.onclick = ()=>{ downloadQuizFile(); }; }
-  const copyBtn = document.getElementById('copyLinkBtn');
-  if(copyBtn){ copyBtn.onclick = async ()=>{ try{ await navigator.clipboard.writeText(state.shareLink); copyBtn.textContent='Copied'; setTimeout(()=>copyBtn.textContent='Copy link',1400); }catch(e){} }; }
-  const fileInput = document.getElementById('quizFile');
-  if(fileInput){
-    fileInput.addEventListener('change', async (e)=>{
-      const file = e.target.files && e.target.files[0];
-      if(!file) return;
+  };
+  const saveBtn = document.getElementById('saveBtn');
+  if(saveBtn){
+    saveBtn.onclick = async ()=>{
       try{
-        await loadQuizFile(file);
-        state.error='';
-        state.status='クイズファイルを読み込みました。';
+        state.error = '';
+        state.status = 'Supabaseへ保存中です...';
         render();
-      }catch(err){
-        state.status='';
-        state.error = err.message || 'クイズファイルの読み込みに失敗しました。';
+        await saveQuizToSupabase();
+        state.status = '保存できました。共有リンクを使えます。';
+        saveLocal();
+        render();
+      }catch(e){
+        state.status = '';
+        state.error = e.message || '保存に失敗しました。';
         render();
       }
-    });
+    };
+  }
+  const copyBtn = document.getElementById('copyLinkBtn');
+  if(copyBtn){
+    copyBtn.onclick = async ()=>{
+      try{
+        await navigator.clipboard.writeText(state.shareLink);
+        copyBtn.textContent = 'Copied';
+        setTimeout(()=> copyBtn.textContent = 'Copy link', 1400);
+      }catch(e){}
+    };
   }
 }
-
 (async function init(){
-  const hashQuiz = await getHashQuiz();
-  if(hashQuiz && hashQuiz.__error){
-    state.error = hashQuiz.__error;
-    state.mode = 'builder';
-    loadLocal();
-    if(state.questions.length) resetRendered();
-    render();
-    return;
-  }
-  if(hashQuiz && hashQuiz.questions){
-    state.mode='solver';
-    state.title = hashQuiz.title || state.title;
-    state.description = hashQuiz.description || state.description;
-    state.questions = Array.isArray(hashQuiz.questions) ? hashQuiz.questions : [];
-    state.shuffleQuestions = !!hashQuiz.shuffleQuestions;
-    state.shuffleChoices = !!hashQuiz.shuffleChoices;
-    resetRendered();
+  loadLocal();
+  if(!state.slug) state.slug = slugify(state.title);
+  const quizSlug = getSlugFromQuery();
+  if(quizSlug){
+    try{
+      state.mode = 'solver';
+      await loadQuizFromSupabase(quizSlug);
+    }catch(e){
+      state.mode = 'builder';
+      state.error = e.message || 'クイズの読み込みに失敗しました。';
+      if(state.questions.length) resetRendered();
+    }
   }else{
-    loadLocal();
     if(state.questions.length) resetRendered();
   }
   render();
