@@ -22,10 +22,10 @@
     .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
     @media (max-width:780px){.row{grid-template-columns:1fr}}
     label{display:block;font-weight:600;margin-bottom:6px}
-    input[type="text"], textarea, input[type="file"]{
+    input[type="text"], input[type="number"], textarea, input[type="file"]{
       width:100%;border:1px solid var(--line);border-radius:14px;padding:12px 14px;font:inherit;background:#fff
     }
-    textarea{min-height:300px;resize:vertical}
+    textarea{min-height:220px;resize:vertical}
     .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
     button,.buttonlink{
       border:none;background:var(--primary);color:#fff;border-radius:14px;padding:11px 16px;
@@ -69,10 +69,9 @@
 <script>
 const DEFAULT_SUPABASE_URL = "https://pkabndydlnpjpfyxkaao.supabase.co";
 const DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_5DSYUyEVrvTSOspr9LTN4w_RByBkdyp";
-const STORAGE_KEY = "quiz_builder_supabase_list_v1";
-const SAMPLE_TSV = `No	Question	Option A	Option B	Option C	Option D	Correct Answer	Explanation	Supporting Excerpt
-1	Which statement about an ideal renal biomarker is appropriate?	It should show wide biologic variability and partial protein binding.	It should be easy to measure and cost-effective.	It should undergo substantial non-renal metabolism.	It should be secreted and reabsorbed by the tubules.	B	The chapter lists easy measurability and cost-effectiveness among the ideal properties of a renal biomarker.	The ideal properties of a renal biomarker include ... easy measurability, and cost-effectiveness.
-2	Which description of creatinine is correct?	Its production rate varies markedly from day to day and is independent of muscle mass.	It is synthesized mainly in the liver from ammonia.	It is a breakdown product of creatine and creatine phosphate in skeletal muscle.	It is reabsorbed extensively by the proximal tubule in dogs and cats.	C	Creatinine is described as a breakdown product of creatine and creatine phosphate in skeletal muscle.	Creatinine is a breakdown product of creatine and creatine phosphate in skeletal muscle.`;
+const STORAGE_KEY = "quiz_builder_supabase_list_v2";
+const SAMPLE_TSV = `No\tQuestion\tOption A\tOption B\tOption C\tOption D\tCorrect Answer\tExplanation\tSupporting Excerpt
+1\tWhich statement about an ideal renal biomarker is appropriate?\tIt should show wide biologic variability and partial protein binding.\tIt should be easy to measure and cost-effective.\tIt should undergo substantial non-renal metabolism.\tIt should be secreted and reabsorbed by the tubules.\tB\tThe chapter lists easy measurability and cost-effectiveness among the ideal properties of a renal biomarker.\tThe ideal properties of a renal biomarker include ... easy measurability, and cost-effectiveness.`;
 
 function escapeHtml(s=''){ return s.replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
 function norm(s=''){ return s.toLowerCase().replace(/[\s_\-・（）()]/g,'').replace(/：/g,'').trim(); }
@@ -147,6 +146,12 @@ const state = {
   shuffleChoices: false,
   supabaseUrl: DEFAULT_SUPABASE_URL,
   supabaseKey: DEFAULT_SUPABASE_PUBLISHABLE_KEY,
+  sourceText: '',
+  questionCount: 10,
+  aiStatus: '',
+  aiError: '',
+  generatedEnTsv: '',
+  generatedJaTsv: '',
 };
 function saveLocal(){
   if(state.mode === 'solver') return;
@@ -154,6 +159,8 @@ function saveLocal(){
     title: state.title, description: state.description, slug: state.slug, tsv: state.tsv,
     questions: state.questions, shuffleQuestions: state.shuffleQuestions, shuffleChoices: state.shuffleChoices,
     supabaseUrl: state.supabaseUrl, supabaseKey: state.supabaseKey,
+    sourceText: state.sourceText, questionCount: state.questionCount,
+    generatedEnTsv: state.generatedEnTsv, generatedJaTsv: state.generatedJaTsv,
   }));
 }
 function loadLocal(){
@@ -170,6 +177,10 @@ function loadLocal(){
     state.shuffleChoices = !!s.shuffleChoices;
     state.supabaseUrl = s.supabaseUrl || state.supabaseUrl;
     state.supabaseKey = s.supabaseKey || state.supabaseKey;
+    state.sourceText = s.sourceText || '';
+    state.questionCount = Number(s.questionCount || 10);
+    state.generatedEnTsv = s.generatedEnTsv || '';
+    state.generatedJaTsv = s.generatedJaTsv || '';
   }catch(e){}
 }
 function resetRendered(){
@@ -274,6 +285,33 @@ function listRowsHtml(){
     }).join('')}
   `;
 }
+async function generateQuizWithAI(){
+  const sourceText = state.sourceText.trim();
+  if(!sourceText) throw new Error('教科書本文を入力してください。');
+  const functionUrl = `${state.supabaseUrl}/functions/v1/generate-quiz`;
+  const res = await fetch(functionUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': state.supabaseKey,
+      'Authorization': 'Bearer ' + state.supabaseKey,
+    },
+    body: JSON.stringify({
+      sourceText,
+      questionCount: Number(state.questionCount || 10),
+      title: state.title || 'Generated Quiz',
+    }),
+  });
+  const json = await res.json().catch(()=> ({}));
+  if(!res.ok){
+    throw new Error(json.detail || json.error || `AI作問に失敗しました (${res.status})`);
+  }
+  state.generatedEnTsv = json.tsv_en || '';
+  state.generatedJaTsv = json.tsv_ja || '';
+  state.aiError = '';
+  state.aiStatus = 'AI作問が完了しました。English TSV か 日本語 TSV を選んで流し込んでください。';
+  saveLocal();
+}
 function render(){
   const app = document.getElementById('app');
   if(state.mode === 'solver'){
@@ -333,7 +371,7 @@ function render(){
       <div class="topbar">
         <div>
           <h1>Quiz Builder</h1>
-          <p class="muted">TSVを貼るかドラッグ&ドロップしてクイズを作り、Supabaseへ保存して短いリンクを発行します。</p>
+          <p class="muted">TSVを貼るかAIで自動生成してクイズを作り、Supabaseへ保存して短いリンクを発行します。</p>
         </div>
         <div><span class="pill">Supabase mode</span></div>
       </div>
@@ -349,12 +387,27 @@ function render(){
     </div>
 
     <div class="card">
-      <h2>1. Quiz data</h2>
+      <h2>1. AI quiz generation</h2>
       <div class="row">
+        <div><label for="questionCount">Question count</label><input id="questionCount" type="number" min="1" max="20" value="${escapeHtml(String(state.questionCount))}"></div>
         <div><label for="title">Quiz title</label><input id="title" type="text" value="${escapeHtml(state.title)}"></div>
-        <div><label for="slug">Slug</label><input id="slug" type="text" value="${escapeHtml(state.slug)}" placeholder="chapter-62-en"></div>
       </div>
-      <div style="margin-top:14px;"><label for="description">Description</label><input id="description" type="text" value="${escapeHtml(state.description)}"></div>
+      <div style="margin-top:14px;"><label for="sourceText">Source textbook text</label><textarea id="sourceText" placeholder="ここに教科書本文を貼り付けます。">${escapeHtml(state.sourceText)}</textarea></div>
+      <div class="btns">
+        <button id="aiGenerateBtn">AIで作問</button>
+        <button class="secondary" id="useEnTsvBtn" ${state.generatedEnTsv ? '' : 'disabled'}>English TSVを使う</button>
+        <button class="secondary" id="useJaTsvBtn" ${state.generatedJaTsv ? '' : 'disabled'}>日本語TSVを使う</button>
+      </div>
+      ${state.aiError ? `<div class="alert error" style="margin-top:12px;">${escapeHtml(state.aiError)}</div>` : ''}
+      ${state.aiStatus ? `<div class="alert ok" style="margin-top:12px;">${escapeHtml(state.aiStatus)}</div>` : ''}
+    </div>
+
+    <div class="card">
+      <h2>2. Quiz data</h2>
+      <div class="row">
+        <div><label for="slug">Slug</label><input id="slug" type="text" value="${escapeHtml(state.slug)}" placeholder="chapter-303-en"></div>
+        <div><label for="description">Description</label><input id="description" type="text" value="${escapeHtml(state.description)}"></div>
+      </div>
       <div style="margin-top:14px;">
         <div class="dropzone" id="dropzone">
           <strong>TSV file drag & drop</strong>
@@ -372,7 +425,7 @@ function render(){
     </div>
 
     <div class="card">
-      <h2>2. Answer page settings</h2>
+      <h2>3. Answer page settings</h2>
       <div class="switches">
         <label class="switchrow"><span><strong>Shuffle question order</strong><br><span class="muted small">回答ページ表示時の問題順をランダム化します。</span></span><input id="shuffleQ" type="checkbox" ${state.shuffleQuestions ? 'checked' : ''}></label>
         <label class="switchrow"><span><strong>Shuffle choice order</strong><br><span class="muted small">選択肢順をランダム化し、正答も追従させます。</span></span><input id="shuffleC" type="checkbox" ${state.shuffleChoices ? 'checked' : ''}></label>
@@ -392,7 +445,7 @@ function render(){
     <div class="card">
       <div class="topbar">
         <div>
-          <h2>3. Saved quizzes</h2>
+          <h2>4. Saved quizzes</h2>
           <p class="muted">作成済みクイズの棚です。開く、リンクをコピーする、slug を確認するときに使えます。</p>
         </div>
         <div class="btns" style="margin-top:0;">
@@ -404,15 +457,52 @@ function render(){
     </div>
   `;
 
-  ['supabaseUrl','supabaseKey','title','slug','description','tsv'].forEach(id=>{
+  ['supabaseUrl','supabaseKey','title','slug','description','tsv','sourceText'].forEach(id=>{
     document.getElementById(id).addEventListener('input', e=>{
       state[id] = e.target.value;
-      if(id === 'title' && (!state.slug || state.slug === slugify(state.title))) state.slug = slugify(e.target.value);
       saveLocal();
     });
   });
+  document.getElementById('questionCount').addEventListener('input', e=>{
+    state.questionCount = Number(e.target.value || 10);
+    saveLocal();
+  });
   document.getElementById('shuffleQ').addEventListener('change', e=>{ state.shuffleQuestions = e.target.checked; saveLocal(); });
   document.getElementById('shuffleC').addEventListener('change', e=>{ state.shuffleChoices = e.target.checked; saveLocal(); });
+
+  document.getElementById('aiGenerateBtn').onclick = async ()=>{
+    try{
+      state.aiError = '';
+      state.aiStatus = 'AIで作問中です...';
+      render();
+      await generateQuizWithAI();
+      state.tsv = state.generatedEnTsv || '';
+      state.status = 'English TSV をTSV欄に読み込みました。必要なら日本語TSVにも切り替えられます。';
+      state.error = '';
+      saveLocal();
+      render();
+    }catch(e){
+      state.aiStatus = '';
+      state.aiError = e.message || 'AI作問に失敗しました。';
+      render();
+    }
+  };
+
+  document.getElementById('useEnTsvBtn').onclick = ()=>{
+    state.tsv = state.generatedEnTsv || '';
+    state.status = 'English TSV をTSV欄に反映しました。';
+    state.error = '';
+    saveLocal();
+    render();
+  };
+  document.getElementById('useJaTsvBtn').onclick = ()=>{
+    state.tsv = state.generatedJaTsv || '';
+    state.status = '日本語TSV をTSV欄に反映しました。';
+    state.error = '';
+    saveLocal();
+    render();
+  };
+
   document.getElementById('sampleBtn').onclick = ()=>{
     state.tsv = SAMPLE_TSV;
     if(!state.slug) state.slug = slugify(state.title);
@@ -421,6 +511,7 @@ function render(){
     saveLocal();
     render();
   };
+
   const readFile = async (file)=>{
     state.tsv = await file.text();
     state.error = '';
@@ -439,6 +530,7 @@ function render(){
     const file = e.dataTransfer.files && e.dataTransfer.files[0];
     if(file) await readFile(file);
   });
+
   document.getElementById('generateBtn').onclick = ()=>{
     try{
       state.questions = parseTSV(document.getElementById('tsv').value);
@@ -454,6 +546,7 @@ function render(){
       render();
     }
   };
+
   const saveBtn = document.getElementById('saveBtn');
   if(saveBtn){
     saveBtn.onclick = async ()=>{
@@ -473,6 +566,7 @@ function render(){
       }
     };
   }
+
   const copyBtn = document.getElementById('copyLinkBtn');
   if(copyBtn){
     copyBtn.onclick = async ()=>{
@@ -483,6 +577,7 @@ function render(){
       }catch(e){}
     };
   }
+
   document.getElementById('refreshListBtn').onclick = refreshQuizList;
   document.querySelectorAll('.copy-list-link').forEach(btn=>{
     btn.onclick = async ()=>{
