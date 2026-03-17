@@ -22,7 +22,7 @@
     .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
     @media (max-width:780px){.row{grid-template-columns:1fr}}
     label{display:block;font-weight:600;margin-bottom:6px}
-    input[type="text"], input[type="number"], textarea, input[type="file"]{
+    input[type="text"], input[type="number"], select, textarea, input[type="file"]{
       width:100%;border:1px solid var(--line);border-radius:14px;padding:12px 14px;font:inherit;background:#fff
     }
     textarea{min-height:220px;resize:vertical}
@@ -71,7 +71,7 @@
 <script>
 const DEFAULT_SUPABASE_URL = "https://pkabndydlnpjpfyxkaao.supabase.co";
 const DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_5DSYUyEVrvTSOspr9LTN4w_RByBkdyp";
-const STORAGE_KEY = "quiz_builder_supabase_list_v3";
+const STORAGE_KEY = "quiz_builder_supabase_list_v4";
 
 const SAMPLE_TSV = `No\tQuestion\tOption A\tOption B\tOption C\tOption D\tCorrect Answer\tExplanation\tSupporting Excerpt
 1\tWhich statement about an ideal renal biomarker is appropriate?\tIt should show wide biologic variability and partial protein binding.\tIt should be easy to measure and cost-effective.\tIt should undergo substantial non-renal metabolism.\tIt should be secreted and reabsorbed by the tubules.\tB\tThe chapter lists easy measurability and cost-effectiveness among the ideal properties of a renal biomarker.\tThe ideal properties of a renal biomarker include ... easy measurability, and cost-effectiveness.`;
@@ -182,6 +182,7 @@ const state = {
   generatedJaTsv: '',
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   promptTemplate: DEFAULT_PROMPT_TEMPLATE,
+  autoSaveLanguage: 'en',
 };
 
 function saveLocal(){
@@ -202,6 +203,7 @@ function saveLocal(){
     generatedJaTsv: state.generatedJaTsv,
     systemPrompt: state.systemPrompt,
     promptTemplate: state.promptTemplate,
+    autoSaveLanguage: state.autoSaveLanguage,
   }));
 }
 
@@ -225,6 +227,7 @@ function loadLocal(){
     state.generatedJaTsv = s.generatedJaTsv || '';
     state.systemPrompt = s.systemPrompt || DEFAULT_SYSTEM_PROMPT;
     state.promptTemplate = s.promptTemplate || DEFAULT_PROMPT_TEMPLATE;
+    state.autoSaveLanguage = s.autoSaveLanguage || 'en';
   }catch(e){}
 }
 
@@ -254,12 +257,30 @@ async function supabaseRequest(path, {method='GET', body=null, prefer=''}={}){
   return text ? JSON.parse(text) : null;
 }
 
-async function saveQuizToSupabase(){
+async function findAvailableSlug(baseSlug){
+  const base = baseSlug || slugify(state.title) || 'quiz';
+  const query = `/rest/v1/quizzes?select=slug&or=(slug.eq.${encodeURIComponent(base)},slug.like.${encodeURIComponent(base + '-%')})`;
+  const existing = await supabaseRequest(query, {method:'GET'});
+  const slugs = new Set((existing || []).map(x => x.slug));
+  if(!slugs.has(base)) return base;
+  let n = 2;
+  while(slugs.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+
+async function saveQuizToSupabase({autoSlug = false} = {}){
   if(!state.questions.length) throw new Error('先にTSVを読み込んでください。');
-  const slug = state.slug || slugify(state.title);
+
+  let slug = state.slug || slugify(state.title);
   if(!slug) throw new Error('slug を入力してください。');
-  const existing = await supabaseRequest(`/rest/v1/quizzes?slug=eq.${encodeURIComponent(slug)}&select=id`, {method:'GET'});
-  if(Array.isArray(existing) && existing.length > 0) throw new Error('この slug はすでに存在します。別の slug にしてください。');
+
+  if(autoSlug){
+    slug = await findAvailableSlug(slug);
+  } else {
+    const existing = await supabaseRequest(`/rest/v1/quizzes?slug=eq.${encodeURIComponent(slug)}&select=id`, {method:'GET'});
+    if(Array.isArray(existing) && existing.length > 0) throw new Error('この slug はすでに存在します。別の slug にしてください。');
+  }
+
   const payload = {
     slug,
     title: state.title,
@@ -272,6 +293,7 @@ async function saveQuizToSupabase(){
       questions: state.questions,
     }
   };
+
   await supabaseRequest('/rest/v1/quizzes', {method:'POST', body: payload});
   state.slug = slug;
   state.shareLink = `${location.origin}${location.pathname}?quiz=${encodeURIComponent(slug)}`;
@@ -340,6 +362,7 @@ function listRowsHtml(){
 async function generateQuizWithAI(){
   const sourceText = state.sourceText.trim();
   if(!sourceText) throw new Error('教科書本文を入力してください。');
+
   const functionUrl = `${state.supabaseUrl}/functions/v1/generate_quiz`;
   const res = await fetch(functionUrl, {
     method: 'POST',
@@ -365,6 +388,34 @@ async function generateQuizWithAI(){
   state.aiError = '';
   state.aiStatus = 'AI作問が完了しました。English TSV か 日本語 TSV を選んで流し込んでください。';
   saveLocal();
+}
+
+async function generateAndSaveQuiz(){
+  state.aiError = '';
+  state.error = '';
+  state.shareLink = '';
+  state.aiStatus = 'AIで作問中です...';
+  render();
+
+  await generateQuizWithAI();
+
+  state.tsv = state.autoSaveLanguage === 'ja' ? (state.generatedJaTsv || '') : (state.generatedEnTsv || '');
+  state.status = `${state.autoSaveLanguage === 'ja' ? '日本語' : 'English'} TSV を自動で反映しました。`;
+
+  state.questions = parseTSV(state.tsv);
+  state.status = `クイズデータを読み込みました。${state.questions.length}問を認識しました。`;
+
+  if(!state.slug) state.slug = slugify(state.title);
+
+  state.status = 'Supabaseへ自動保存中です...';
+  render();
+
+  await saveQuizToSupabase({autoSlug: true});
+  await refreshQuizList();
+
+  state.status = 'AIで作問して保存まで完了しました。共有リンクを使えます。';
+  saveLocal();
+  render();
 }
 
 function render(){
@@ -454,6 +505,8 @@ function render(){
         <textarea id="sourceText" placeholder="ここに教科書本文を貼り付けます。">${escapeHtml(state.sourceText)}</textarea>
       </div>
 
+      ${state.questionCount > 10 ? `<div class="alert info" style="margin-top:12px;">問題数が多いとタイムアウトしやすくなります。まずは 8〜10問がおすすめです。</div>` : ''}
+
       <details class="promptbox">
         <summary>Prompt settings</summary>
         <p class="small muted">初期プロンプトを可視化しています。ここを編集すると、その内容が今回のAI作問に使われます。</p>
@@ -480,10 +533,25 @@ function render(){
         </div>
       </details>
 
+      <div class="row" style="margin-top:14px;">
+        <div>
+          <label for="autoSaveLanguage">Auto-save language</label>
+          <select id="autoSaveLanguage">
+            <option value="en" ${state.autoSaveLanguage === 'en' ? 'selected' : ''}>English TSV を保存</option>
+            <option value="ja" ${state.autoSaveLanguage === 'ja' ? 'selected' : ''}>日本語TSV を保存</option>
+          </select>
+        </div>
+        <div>
+          <label>Quick action</label>
+          <div class="small muted">作問から保存までを1ボタンで進められます。slug は重複時に自動採番されます。</div>
+        </div>
+      </div>
+
       <div class="btns">
         <button id="aiGenerateBtn">AIで作問</button>
         <button class="secondary" id="useEnTsvBtn" ${state.generatedEnTsv ? '' : 'disabled'}>English TSVを使う</button>
         <button class="secondary" id="useJaTsvBtn" ${state.generatedJaTsv ? '' : 'disabled'}>日本語TSVを使う</button>
+        <button class="ghost" id="aiGenerateAndSaveBtn">AIで作問して保存</button>
       </div>
 
       ${state.aiError ? `<div class="alert error" style="margin-top:12px;">${escapeHtml(state.aiError)}</div>` : ''}
@@ -560,6 +628,11 @@ function render(){
     saveLocal();
   });
 
+  document.getElementById('autoSaveLanguage').addEventListener('change', e=>{
+    state.autoSaveLanguage = e.target.value;
+    saveLocal();
+  });
+
   document.getElementById('shuffleQ').addEventListener('change', e=>{ state.shuffleQuestions = e.target.checked; saveLocal(); });
   document.getElementById('shuffleC').addEventListener('change', e=>{ state.shuffleChoices = e.target.checked; saveLocal(); });
 
@@ -586,6 +659,16 @@ function render(){
     }catch(e){
       state.aiStatus = '';
       state.aiError = e.message || 'AI作問に失敗しました。';
+      render();
+    }
+  };
+
+  document.getElementById('aiGenerateAndSaveBtn').onclick = async ()=>{
+    try{
+      await generateAndSaveQuiz();
+    }catch(e){
+      state.aiStatus = '';
+      state.aiError = e.message || 'AIで作問して保存に失敗しました。';
       render();
     }
   };
