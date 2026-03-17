@@ -290,18 +290,16 @@ async function generateQuizWithAI(){
   if(!sourceText) throw new Error('教科書本文を入力してください。');
   const functionUrl = `${state.supabaseUrl}/functions/v1/generate-quiz`;
   const res = await fetch(functionUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'apikey': state.supabaseKey,
-      'Authorization': 'Bearer ' + state.supabaseKey,
-    },
-    body: JSON.stringify({
-      sourceText,
-      questionCount: Number(state.questionCount || 10),
-      title: state.title || 'Generated Quiz',
-    }),
-  });
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    sourceText,
+    questionCount: Number(state.questionCount || 10),
+    title: state.title || 'Generated Quiz',
+  }),
+});
   const json = await res.json().catch(()=> ({}));
   if(!res.ok){
     throw new Error(json.detail || json.error || `AI作問に失敗しました (${res.status})`);
