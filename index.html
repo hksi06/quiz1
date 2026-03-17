@@ -288,7 +288,7 @@ function listRowsHtml(){
 async function generateQuizWithAI(){
   const sourceText = state.sourceText.trim();
   if(!sourceText) throw new Error('教科書本文を入力してください。');
-  const functionUrl = `${state.supabaseUrl}/functions/v1/generate-quiz`;
+  const functionUrl = `${state.supabaseUrl}/functions/v1/generate_quiz`;
   const res = await fetch(functionUrl, {
   method: 'POST',
   headers: {
