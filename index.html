@@ -101,6 +101,7 @@ Follow these rules strictly:
 - Do not bold the correct answer.
 - Randomize correct answer positions across questions.
 - Include a brief explanation in English and Japanese.
+- Include brief choice-by-choice explanations in English and Japanese for options A, B, C, and D, explaining why the correct answer is correct and why each incorrect option is not the best answer.
 - Include a short supporting excerpt copied or lightly trimmed from the source text.
 - If an abbreviation first appears in a question or explanation, spell it out first.
 - The question stem should ask what is correct/appropriate, not "which matches the text".
@@ -108,7 +109,6 @@ Follow these rules strictly:
 - The output must match the schema exactly.
 ・教科書によると、囲み記事では、などの表現をせず、元の文章ではという文脈でなくて一般的な問いと答えの形にしてください。
 ・onlyやexclusivelyなどの正誤がわかりやすい表現は避けてください。
-・正答と誤答の選択肢の文章の長さが大きく違わないようにしてください
 
 Source text:
 """{{sourceText}}"""`;
@@ -138,6 +138,10 @@ function parseTSV(tsv){
     d: idx("Option D","D","選択肢D"),
     correct: idx("Correct Answer","Correct","Answer","正答","正解","解答"),
     explanation: idx("Explanation","解説","Feedback","Answer feedback"),
+    aexp: idx("Option A Explanation","A Explanation","Option A Note","A Note","選択肢A解説","選択肢Aの解説"),
+    bexp: idx("Option B Explanation","B Explanation","Option B Note","B Note","選択肢B解説","選択肢Bの解説"),
+    cexp: idx("Option C Explanation","C Explanation","Option C Note","C Note","選択肢C解説","選択肢Cの解説"),
+    dexp: idx("Option D Explanation","D Explanation","Option D Note","D Note","選択肢D解説","選択肢Dの解説"),
     excerpt: idx("Supporting Excerpt","Excerpt","根拠","根拠本文抜粋","本文抜粋"),
   };
   const required = ["q","a","b","c","d","correct"].filter(k=>map[k]===-1);
@@ -152,6 +156,12 @@ function parseTSV(tsv){
       options: { A:(cells[map.a]||"").trim(), B:(cells[map.b]||"").trim(), C:(cells[map.c]||"").trim(), D:(cells[map.d]||"").trim() },
       correct,
       explanation: map.explanation>=0 ? (cells[map.explanation]||"").trim() : "",
+      optionExplanations: {
+        A: map.aexp>=0 ? (cells[map.aexp]||"").trim() : "",
+        B: map.bexp>=0 ? (cells[map.bexp]||"").trim() : "",
+        C: map.cexp>=0 ? (cells[map.cexp]||"").trim() : "",
+        D: map.dexp>=0 ? (cells[map.dexp]||"").trim() : "",
+      },
       excerpt: map.excerpt>=0 ? (cells[map.excerpt]||"").trim() : "",
     };
   }).filter(r => r.question && r.options.A && r.options.B && r.options.C && r.options.D);
@@ -160,10 +170,14 @@ function buildQuestions(questions, shuffleQ, shuffleC){
   let qs = questions.map(q=>{
     let entries = Object.entries(q.options).map(([k,v])=>({orig:k, text:v}));
     if(shuffleC) entries = shuffleArray(entries);
-    const displayOptions = {}, map = {};
-    ["A","B","C","D"].forEach((key, idx)=>{ displayOptions[key]=entries[idx].text; map[key]=entries[idx].orig; });
+    const displayOptions = {}, map = {}, displayOptionExplanations = {};
+    ["A","B","C","D"].forEach((key, idx)=>{
+      displayOptions[key]=entries[idx].text;
+      map[key]=entries[idx].orig;
+      displayOptionExplanations[key] = (q.optionExplanations && q.optionExplanations[entries[idx].orig]) || q[`optionExplanation${entries[idx].orig}`] || '';
+    });
     const displayCorrect = Object.keys(map).find(k => map[k]===q.correct) || q.correct;
-    return {...q, displayOptions, displayCorrect};
+    return {...q, displayOptions, displayCorrect, displayOptionExplanations};
   });
   if(shuffleQ) qs = shuffleArray(qs);
   return qs;
@@ -174,7 +188,7 @@ function tsvEscape(value=''){
 function makeTsvEnFromQuestions(questions){
   const header = [
     "No","Question","Option A","Option B","Option C","Option D",
-    "Correct Answer","Explanation","Supporting Excerpt"
+    "Correct Answer","Explanation","Option A Explanation","Option B Explanation","Option C Explanation","Option D Explanation","Supporting Excerpt"
   ];
   const lines = [header.join("\t")];
   questions.forEach((q, i)=>{
@@ -187,6 +201,10 @@ function makeTsvEnFromQuestions(questions){
       q.optionD_en || "",
       q.correct || "",
       q.explanation_en || "",
+      q.optionA_explanation_en || "",
+      q.optionB_explanation_en || "",
+      q.optionC_explanation_en || "",
+      q.optionD_explanation_en || "",
       q.excerpt || "",
     ].map(tsvEscape).join("\t"));
   });
@@ -195,7 +213,7 @@ function makeTsvEnFromQuestions(questions){
 function makeTsvJaFromQuestions(questions){
   const header = [
     "No","Question","Option A","Option B","Option C","Option D",
-    "Correct Answer","Explanation","Supporting Excerpt"
+    "Correct Answer","Explanation","Option A Explanation","Option B Explanation","Option C Explanation","Option D Explanation","Supporting Excerpt"
   ];
   const lines = [header.join("\t")];
   questions.forEach((q, i)=>{
@@ -208,6 +226,10 @@ function makeTsvJaFromQuestions(questions){
       q.optionD_ja || "",
       q.correct || "",
       q.explanation_ja || "",
+      q.optionA_explanation_ja || "",
+      q.optionB_explanation_ja || "",
+      q.optionC_explanation_ja || "",
+      q.optionD_explanation_ja || "",
       q.excerpt || "",
     ].map(tsvEscape).join("\t"));
   });
@@ -440,6 +462,7 @@ function setQuizMeta(slug, patch){
 function buildQuizQuestionsForLanguage(sourceQuestions, language='en'){
   return (sourceQuestions || []).map((q, i)=>({
     id: String(q.no || (i + 1)),
+    language,
     question: language === 'ja' ? (q.question_ja || '') : (q.question_en || ''),
     options: {
       A: language === 'ja' ? (q.optionA_ja || '') : (q.optionA_en || ''),
@@ -449,8 +472,38 @@ function buildQuizQuestionsForLanguage(sourceQuestions, language='en'){
     },
     correct: q.correct || 'A',
     explanation: language === 'ja' ? (q.explanation_ja || '') : (q.explanation_en || ''),
+    optionExplanations: {
+      A: language === 'ja' ? (q.optionA_explanation_ja || '') : (q.optionA_explanation_en || ''),
+      B: language === 'ja' ? (q.optionB_explanation_ja || '') : (q.optionB_explanation_en || ''),
+      C: language === 'ja' ? (q.optionC_explanation_ja || '') : (q.optionC_explanation_en || ''),
+      D: language === 'ja' ? (q.optionD_explanation_ja || '') : (q.optionD_explanation_en || ''),
+    },
     excerpt: q.excerpt || '',
   }));
+}
+
+function getPreviewChoiceExplanation(q, key, language='en'){
+  return language === 'ja' ? (q[`option${key}_explanation_ja`] || '') : (q[`option${key}_explanation_en`] || '');
+}
+
+function renderPreviewChoiceExplanationBlock(q, language='en'){
+  const items = ['A','B','C','D'].map(key=>{
+    const text = getPreviewChoiceExplanation(q, key, language);
+    if(!text) return '';
+    return `<div class="small" style="margin-top:6px;"><strong>${key}.</strong> ${escapeHtml(text)}</div>`;
+  }).filter(Boolean).join('');
+  if(!items) return '';
+  return `<div style="margin-top:12px;"><strong>${language === 'ja' ? '各選択肢の解説' : 'Choice-by-choice notes'}</strong><div style="margin-top:6px;">${items}</div></div>`;
+}
+
+function renderSavedChoiceExplanationBlock(q, language='en'){
+  const items = ['A','B','C','D'].map(key=>{
+    const text = (q.displayOptionExplanations && q.displayOptionExplanations[key]) || (q.optionExplanations && q.optionExplanations[key]) || q[`optionExplanation${key}`] || '';
+    if(!text) return '';
+    return `<div class="small" style="margin-top:6px;"><strong>${key}.</strong> ${escapeHtml(text)}</div>`;
+  }).filter(Boolean).join('');
+  if(!items) return '';
+  return `<div style="margin-top:8px;"><strong>${language === 'ja' ? '各選択肢の解説' : 'Choice-by-choice notes'}</strong><div style="margin-top:6px;">${items}</div></div>`;
 }
 
 function getSupabaseBaseUrl(){
@@ -505,6 +558,7 @@ Follow these rules strictly:
 - The question stem should ask what is correct/appropriate, not "which matches the text".
 - Avoid obvious giveaway wording such as "always", "never", "only", "exclusively", "不要", "常に", "十分である".
 - Include a brief explanation in English and Japanese.
+- Include brief choice-by-choice explanations in English and Japanese for options A, B, C, and D, explaining why the correct answer is correct and why each incorrect option is not the best answer.
 - Include a short supporting excerpt copied or lightly trimmed from the source text.
 - Return JSON only.
 
@@ -912,6 +966,7 @@ function render(){
         const selected = state.answers[q.id] || '';
         const hasAnswered = !!selected;
         const isCorrect = selected === q.displayCorrect;
+        const isJapanese = q.language === 'ja';
         return `
           <div class="card question">
             <h3>Q${idx+1}. ${escapeHtml(q.question)}</h3>
@@ -923,9 +978,10 @@ function render(){
               return `<label class="${cls}"><input type="radio" name="q_${escapeHtml(q.id)}" value="${key}" ${selected===key?'checked':''}> <strong>${key}.</strong> ${escapeHtml(text)}</label>`;
             }).join('')}
             ${hasAnswered ? `<div class="feedback ${isCorrect ? 'correct':'incorrect'}">
-              <div><strong>${isCorrect ? 'Correct' : 'Incorrect'}</strong>${isCorrect ? '' : ` · Correct answer: ${escapeHtml(q.displayCorrect)}`}</div>
-              ${q.explanation ? `<div style="margin-top:8px;"><strong>Explanation</strong><div class="small">${escapeHtml(q.explanation)}</div></div>` : ''}
-              ${q.excerpt ? `<div style="margin-top:8px;"><strong>Supporting excerpt</strong><div class="small">${escapeHtml(q.excerpt)}</div></div>` : ''}
+              <div><strong>${isCorrect ? (isJapanese ? '正解' : 'Correct') : (isJapanese ? '不正解' : 'Incorrect')}</strong>${isCorrect ? '' : ` ${isJapanese ? '・正答' : '· Correct answer'}: ${escapeHtml(q.displayCorrect)}`}</div>
+              ${q.explanation ? `<div style="margin-top:8px;"><strong>${isJapanese ? '解説' : 'Explanation'}</strong><div class="small">${escapeHtml(q.explanation)}</div></div>` : ''}
+              ${renderSavedChoiceExplanationBlock(q, isJapanese ? 'ja' : 'en')}
+              ${q.excerpt ? `<div style="margin-top:8px;"><strong>${isJapanese ? '根拠抜粋' : 'Supporting excerpt'}</strong><div class="small">${escapeHtml(q.excerpt)}</div></div>` : ''}
             </div>` : ''}
           </div>`;
       }).join('')}
@@ -1017,12 +1073,12 @@ function render(){
       <div class="topbar">
         <div>
           <h2>2. Review generated quiz</h2>
-          <p class="muted">英語版と日本語版を並べて確認できます。違和感のある問題にはチェックを入れ、メモを書いて作り直せます。</p>
+          <p class="muted">英語版と日本語版を並べて確認できます。解説に加えて各選択肢の説明も確認できます。違和感のある問題にはチェックを入れ、メモを書いて作り直せます。</p>
         </div>
         <div><span class="pill">${state.previewQuestions.length || 0} questions</span><span class="pill">${getSelectedReviewNos().length} selected</span></div>
       </div>
 
-      ${!state.previewQuestions.length ? `<div class="alert info" style="margin-top:12px;">まず「AIで作問してレビュー」を押すと、ここに問題と解説が表示されます。</div>` : `
+      ${!state.previewQuestions.length ? `<div class="alert info" style="margin-top:12px;">まず「AIで作問してレビュー」を押すと、ここに問題と解説、各選択肢の説明が表示されます。</div>` : `
         <div class="btns" style="margin-top:12px;">
           <button id="regenerateSelectedBtn" ${getSelectedReviewNos().length ? '' : 'disabled'}>選択した問題を作り直す</button>
           <button class="secondary" id="clearReviewSelectionBtn">選択を解除</button>
@@ -1053,6 +1109,7 @@ function render(){
                       ${['A','B','C','D'].map(key=>`<div class="review-option ${q.correct===key ? 'correct' : ''}"><strong>${key}.</strong> ${escapeHtml(q[`option${key}_en`] || '')}</div>`).join('')}
                     </div>
                     ${q.explanation_en ? `<div style="margin-top:12px;"><strong>Explanation</strong><div class="small" style="margin-top:6px;">${escapeHtml(q.explanation_en)}</div></div>` : ''}
+                    ${renderPreviewChoiceExplanationBlock(q, 'en')}
                   </div>
                   <div class="review-panel">
                     <h4>日本語</h4>
@@ -1061,6 +1118,7 @@ function render(){
                       ${['A','B','C','D'].map(key=>`<div class="review-option ${q.correct===key ? 'correct' : ''}"><strong>${key}.</strong> ${escapeHtml(q[`option${key}_ja`] || '')}</div>`).join('')}
                     </div>
                     ${q.explanation_ja ? `<div style="margin-top:12px;"><strong>解説</strong><div class="small" style="margin-top:6px;">${escapeHtml(q.explanation_ja)}</div></div>` : ''}
+                    ${renderPreviewChoiceExplanationBlock(q, 'ja')}
                   </div>
                 </div>
                 ${q.excerpt ? `<div style="margin-top:12px;"><strong>Supporting excerpt</strong><div class="small" style="margin-top:6px;">${escapeHtml(q.excerpt)}</div></div>` : ''}
