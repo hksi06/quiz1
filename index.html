@@ -71,7 +71,7 @@
 <script>
 const DEFAULT_SUPABASE_URL = "https://pkabndydlnpjpfyxkaao.supabase.co";
 const DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_5DSYUyEVrvTSOspr9LTN4w_RByBkdyp";
-const STORAGE_KEY = "quiz_builder_supabase_list_v4";
+const STORAGE_KEY = "quiz_builder_supabase_list_v5";
 
 const SAMPLE_TSV = `No\tQuestion\tOption A\tOption B\tOption C\tOption D\tCorrect Answer\tExplanation\tSupporting Excerpt
 1\tWhich statement about an ideal renal biomarker is appropriate?\tIt should show wide biologic variability and partial protein binding.\tIt should be easy to measure and cost-effective.\tIt should undergo substantial non-renal metabolism.\tIt should be secreted and reabsorbed by the tubules.\tB\tThe chapter lists easy measurability and cost-effectiveness among the ideal properties of a renal biomarker.\tThe ideal properties of a renal biomarker include ... easy measurability, and cost-effectiveness.`;
@@ -155,6 +155,156 @@ function buildQuestions(questions, shuffleQ, shuffleC){
   if(shuffleQ) qs = shuffleArray(qs);
   return qs;
 }
+function tsvEscape(value=''){
+  return String(value).replace(/\t/g, " ").replace(/\r?\n/g, " ").trim();
+}
+function makeTsvEnFromQuestions(questions){
+  const header = [
+    "No","Question","Option A","Option B","Option C","Option D",
+    "Correct Answer","Explanation","Supporting Excerpt"
+  ];
+  const lines = [header.join("\t")];
+  questions.forEach((q, i)=>{
+    lines.push([
+      String(i+1),
+      q.question_en || "",
+      q.optionA_en || "",
+      q.optionB_en || "",
+      q.optionC_en || "",
+      q.optionD_en || "",
+      q.correct || "",
+      q.explanation_en || "",
+      q.excerpt || "",
+    ].map(tsvEscape).join("\t"));
+  });
+  return lines.join("\n");
+}
+function makeTsvJaFromQuestions(questions){
+  const header = [
+    "No","Question","Option A","Option B","Option C","Option D",
+    "Correct Answer","Explanation","Supporting Excerpt"
+  ];
+  const lines = [header.join("\t")];
+  questions.forEach((q, i)=>{
+    lines.push([
+      String(i+1),
+      q.question_ja || "",
+      q.optionA_ja || "",
+      q.optionB_ja || "",
+      q.optionC_ja || "",
+      q.optionD_ja || "",
+      q.correct || "",
+      q.explanation_ja || "",
+      q.excerpt || "",
+    ].map(tsvEscape).join("\t"));
+  });
+  return lines.join("\n");
+}
+function isAllCapsHeading(line=''){
+  const s = line.trim();
+  if (!s) return false;
+  if (s.length < 4 || s.length > 120) return false;
+  if (!/[A-Z]/.test(s)) return false;
+  return /^[A-Z0-9 ,;:'"()\/\-\u2019&.]+$/.test(s);
+}
+function splitIntoSections(text=''){
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const sections = [];
+  let current = [];
+  for (const line of lines) {
+    if (isAllCapsHeading(line) && current.length) {
+      sections.push(current.join("\n").trim());
+      current = [line];
+    } else {
+      current.push(line);
+    }
+  }
+  if (current.length) sections.push(current.join("\n").trim());
+  return sections.filter(Boolean);
+}
+function splitLargeTextFallback(text, maxChars){
+  const paragraphs = text.split(/\n{2,}/).map(s=>s.trim()).filter(Boolean);
+  if (paragraphs.length === 0) return [text];
+  const chunks = [];
+  let current = "";
+  for (const p of paragraphs) {
+    const candidate = current ? `${current}\n\n${p}` : p;
+    if (candidate.length <= maxChars || !current) {
+      current = candidate;
+    } else {
+      chunks.push(current);
+      current = p;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+function splitSourceIntoChunks(sourceText, questionCount){
+  const clean = sourceText.trim();
+  const maxChars = questionCount > 10 ? 9000 : 12000;
+
+  let sections = splitIntoSections(clean);
+  if (sections.length <= 1) {
+    sections = splitLargeTextFallback(clean, maxChars);
+  }
+
+  let chunks = [];
+  let current = "";
+
+  for (const section of sections) {
+    const candidate = current ? `${current}\n\n${section}` : section;
+    if (candidate.length <= maxChars || !current) {
+      current = candidate;
+    } else {
+      chunks.push(current);
+      current = section;
+    }
+  }
+  if (current) chunks.push(current);
+
+  if (chunks.length === 1 && clean.length > maxChars) {
+    chunks = splitLargeTextFallback(clean, maxChars);
+  }
+
+  while (chunks.length > questionCount) {
+    const last = chunks.pop();
+    chunks[chunks.length - 1] = `${chunks[chunks.length - 1]}\n\n${last}`;
+  }
+
+  return chunks.filter(Boolean);
+}
+function allocateQuestions(total, chunks){
+  const n = chunks.length;
+  if (n === 1) return [total];
+  const lengths = chunks.map(c => Math.max(c.length, 1));
+  const sum = lengths.reduce((a,b)=>a+b,0);
+
+  let alloc = new Array(n).fill(1);
+  let remaining = total - n;
+
+  if (remaining < 0) {
+    return new Array(total).fill(1);
+  }
+
+  const exactExtras = lengths.map(len => (len / sum) * remaining);
+  const floorExtras = exactExtras.map(x => Math.floor(x));
+  alloc = alloc.map((v, i) => v + floorExtras[i]);
+  let distributed = floorExtras.reduce((a,b)=>a+b,0);
+  let leftovers = remaining - distributed;
+
+  const order = exactExtras
+    .map((x, i) => ({ i, frac: x - Math.floor(x) }))
+    .sort((a,b) => b.frac - a.frac);
+
+  let idx = 0;
+  while (leftovers > 0) {
+    alloc[order[idx % order.length].i] += 1;
+    leftovers -= 1;
+    idx += 1;
+  }
+
+  return alloc;
+}
 
 const state = {
   mode: 'builder',
@@ -185,22 +335,32 @@ const state = {
   autoSaveLanguage: 'en',
 };
 
+function clearBuilderVolatileState(){
+  state.title = 'Chapter Quiz';
+  state.description = 'Paste or drop a TSV file to create a quiz.';
+  state.slug = '';
+  state.tsv = '';
+  state.questions = [];
+  state.rendered = [];
+  state.answers = {};
+  state.error = '';
+  state.status = '';
+  state.shareLink = '';
+  state.sourceText = '';
+  state.questionCount = 10;
+  state.aiStatus = '';
+  state.aiError = '';
+  state.generatedEnTsv = '';
+  state.generatedJaTsv = '';
+}
+
 function saveLocal(){
   if(state.mode === 'solver') return;
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    title: state.title,
-    description: state.description,
-    slug: state.slug,
-    tsv: state.tsv,
-    questions: state.questions,
-    shuffleQuestions: state.shuffleQuestions,
-    shuffleChoices: state.shuffleChoices,
     supabaseUrl: state.supabaseUrl,
     supabaseKey: state.supabaseKey,
-    sourceText: state.sourceText,
-    questionCount: state.questionCount,
-    generatedEnTsv: state.generatedEnTsv,
-    generatedJaTsv: state.generatedJaTsv,
+    shuffleQuestions: state.shuffleQuestions,
+    shuffleChoices: state.shuffleChoices,
     systemPrompt: state.systemPrompt,
     promptTemplate: state.promptTemplate,
     autoSaveLanguage: state.autoSaveLanguage,
@@ -212,19 +372,10 @@ function loadLocal(){
   if(!raw) return;
   try{
     const s = JSON.parse(raw);
-    state.title = s.title || state.title;
-    state.description = s.description || state.description;
-    state.slug = s.slug || state.slug;
-    state.tsv = s.tsv || '';
-    state.questions = Array.isArray(s.questions) ? s.questions : [];
-    state.shuffleQuestions = !!s.shuffleQuestions;
-    state.shuffleChoices = !!s.shuffleChoices;
     state.supabaseUrl = s.supabaseUrl || state.supabaseUrl;
     state.supabaseKey = s.supabaseKey || state.supabaseKey;
-    state.sourceText = s.sourceText || '';
-    state.questionCount = Number(s.questionCount || 10);
-    state.generatedEnTsv = s.generatedEnTsv || '';
-    state.generatedJaTsv = s.generatedJaTsv || '';
+    state.shuffleQuestions = !!s.shuffleQuestions;
+    state.shuffleChoices = !!s.shuffleChoices;
     state.systemPrompt = s.systemPrompt || DEFAULT_SYSTEM_PROMPT;
     state.promptTemplate = s.promptTemplate || DEFAULT_PROMPT_TEMPLATE;
     state.autoSaveLanguage = s.autoSaveLanguage || 'en';
@@ -359,10 +510,7 @@ function listRowsHtml(){
   `;
 }
 
-async function generateQuizWithAI(){
-  const sourceText = state.sourceText.trim();
-  if(!sourceText) throw new Error('教科書本文を入力してください。');
-
+async function callGenerateQuizChunk(chunkText, questionCount, title){
   const functionUrl = `${state.supabaseUrl}/functions/v1/generate_quiz`;
   const res = await fetch(functionUrl, {
     method: 'POST',
@@ -370,9 +518,9 @@ async function generateQuizWithAI(){
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      sourceText,
-      questionCount: Number(state.questionCount || 10),
-      title: state.title || 'Generated Quiz',
+      sourceText: chunkText,
+      questionCount,
+      title,
       systemPrompt: state.systemPrompt,
       promptTemplate: state.promptTemplate,
     }),
@@ -382,11 +530,55 @@ async function generateQuizWithAI(){
   if(!res.ok){
     throw new Error(json.detail ? JSON.stringify(json.detail) : (json.error || `AI作問に失敗しました (${res.status})`));
   }
+  return json;
+}
 
-  state.generatedEnTsv = json.tsv_en || '';
-  state.generatedJaTsv = json.tsv_ja || '';
+async function generateQuizWithAI(){
+  const sourceText = state.sourceText.trim();
+  if(!sourceText) throw new Error('教科書本文を入力してください。');
+
+  const useChunking = sourceText.length > 12000 || Number(state.questionCount) > 10;
+  let allQuestions = [];
+
+  if (!useChunking) {
+    const json = await callGenerateQuizChunk(
+      sourceText,
+      Number(state.questionCount || 10),
+      state.title || 'Generated Quiz'
+    );
+    allQuestions = Array.isArray(json.questions) ? json.questions : [];
+    state.aiStatus = 'AI作問が完了しました。English TSV か 日本語 TSV を選んで流し込んでください。';
+  } else {
+    const chunks = splitSourceIntoChunks(sourceText, Number(state.questionCount || 10));
+    const allocations = allocateQuestions(Number(state.questionCount || 10), chunks);
+
+    state.aiStatus = `長文モードで分割生成しています... 0 / ${chunks.length}`;
+    render();
+
+    for (let i = 0; i < chunks.length; i++) {
+      const qCount = allocations[i];
+      state.aiStatus = `長文モードで分割生成しています... ${i + 1} / ${chunks.length}`;
+      render();
+
+      const json = await callGenerateQuizChunk(
+        chunks[i],
+        qCount,
+        `${state.title || 'Generated Quiz'} (part ${i + 1})`
+      );
+
+      const partQuestions = Array.isArray(json.questions) ? json.questions : [];
+      allQuestions.push(...partQuestions);
+    }
+
+    allQuestions = allQuestions.slice(0, Number(state.questionCount || 10));
+    state.aiStatus = `長文モードでのAI作問が完了しました。${chunks.length}分割を結合しました。`;
+  }
+
+  allQuestions = allQuestions.map((q, i) => ({ ...q, no: i + 1 }));
+
+  state.generatedEnTsv = makeTsvEnFromQuestions(allQuestions);
+  state.generatedJaTsv = makeTsvJaFromQuestions(allQuestions);
   state.aiError = '';
-  state.aiStatus = 'AI作問が完了しました。English TSV か 日本語 TSV を選んで流し込んでください。';
   saveLocal();
 }
 
@@ -437,7 +629,6 @@ function render(){
         <div class="btns">
           <button class="secondary" id="resetAnswersBtn">Reset answers</button>
           <button class="secondary" id="reshuffleBtn">Reshuffle</button>
-          <a class="buttonlink ghost" href="${escapeHtml(location.origin + location.pathname)}">Open builder page</a>
         </div>
         <div class="alert info" style="margin-top:12px;">選択肢を選ぶと、その問題のすぐ下に解答・解説が表示されます。現在の回答数: ${answeredCount}</div>
       </div>
@@ -505,7 +696,7 @@ function render(){
         <textarea id="sourceText" placeholder="ここに教科書本文を貼り付けます。">${escapeHtml(state.sourceText)}</textarea>
       </div>
 
-      ${state.questionCount > 10 ? `<div class="alert info" style="margin-top:12px;">問題数が多いとタイムアウトしやすくなります。まずは 8〜10問がおすすめです。</div>` : ''}
+      ${state.questionCount > 10 ? `<div class="alert info" style="margin-top:12px;">問題数が多い、または本文が長い場合は、自動で分割生成モードになります。</div>` : ''}
 
       <details class="promptbox">
         <summary>Prompt settings</summary>
@@ -552,6 +743,7 @@ function render(){
         <button class="secondary" id="useEnTsvBtn" ${state.generatedEnTsv ? '' : 'disabled'}>English TSVを使う</button>
         <button class="secondary" id="useJaTsvBtn" ${state.generatedJaTsv ? '' : 'disabled'}>日本語TSVを使う</button>
         <button class="ghost" id="aiGenerateAndSaveBtn">AIで作問して保存</button>
+        <button class="secondary" id="clearBuilderBtn">Clear builder</button>
       </div>
 
       ${state.aiError ? `<div class="alert error" style="margin-top:12px;">${escapeHtml(state.aiError)}</div>` : ''}
@@ -641,6 +833,12 @@ function render(){
     state.promptTemplate = DEFAULT_PROMPT_TEMPLATE;
     state.aiStatus = 'プロンプトを初期設定に戻しました。';
     state.aiError = '';
+    saveLocal();
+    render();
+  };
+
+  document.getElementById('clearBuilderBtn').onclick = ()=>{
+    clearBuilderVolatileState();
     saveLocal();
     render();
   };
@@ -781,7 +979,6 @@ function render(){
 
 (async function init(){
   loadLocal();
-  if(!state.slug) state.slug = slugify(state.title);
   const quizSlug = getSlugFromQuery();
   if(quizSlug){
     try{
@@ -789,12 +986,13 @@ function render(){
       await loadQuizFromSupabase(quizSlug);
     }catch(e){
       state.mode = 'builder';
+      clearBuilderVolatileState();
       state.error = e.message || 'クイズの読み込みに失敗しました。';
-      if(state.questions.length) resetRendered();
       try{ await refreshQuizList(); }catch(_){}
     }
   }else{
-    if(state.questions.length) resetRendered();
+    state.mode = 'builder';
+    clearBuilderVolatileState();
     try{ await refreshQuizList(); }catch(_){}
   }
   render();
