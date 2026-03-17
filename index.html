@@ -42,6 +42,7 @@
     .switches{display:grid;gap:12px}
     .switchrow{display:flex;justify-content:space-between;gap:12px;align-items:center;border:1px solid var(--line);border-radius:14px;padding:12px 14px}
     .question{margin-bottom:16px}
+    .selected-for-regeneration{border-color:#bfdbfe;box-shadow:0 0 0 2px #dbeafe inset}
     .option{border:1px solid var(--line);border-radius:16px;padding:12px 14px;margin-top:10px;background:#fff;transition:.15s ease}
     .option:hover{border-color:#c7d2fe}
     .option.selected{border-color:#93c5fd;background:#f8fbff}
@@ -60,6 +61,14 @@
     .list-row{padding:12px 6px;border-top:1px solid var(--line)}
     .promptbox{margin-top:14px;padding:14px;border:1px solid var(--line);border-radius:16px;background:#fafafa}
     .promptbox summary{cursor:pointer;font-weight:700}
+    .review-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap}
+    .review-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+    .review-panel{border:1px solid var(--line);border-radius:16px;padding:14px;background:#fafafa}
+    .review-panel h4{margin:0 0 10px 0;font-size:16px}
+    .review-option{padding:8px 10px;border:1px solid var(--line);border-radius:12px;background:#fff;margin-top:8px}
+    .review-option.correct{border-color:#86efac;background:#f0fdf4}
+    .review-note{min-height:96px}
+    .section-spacer{margin-top:16px}
     @media (max-width:900px){
       .list-head{display:none}
       .list-row{grid-template-columns:1fr;gap:8px}
@@ -340,6 +349,11 @@ const state = {
   listSearch: '',
   listSort: 'created_desc',
   showHidden: false,
+  previewQuestions: [],
+  reviewSelections: {},
+  reviewNotes: {},
+  reviewStatus: '',
+  reviewError: '',
 };
 
 function clearBuilderVolatileState(){
@@ -359,6 +373,11 @@ function clearBuilderVolatileState(){
   state.aiError = '';
   state.generatedEnTsv = '';
   state.generatedJaTsv = '';
+  state.previewQuestions = [];
+  state.reviewSelections = {};
+  state.reviewNotes = {};
+  state.reviewStatus = '';
+  state.reviewError = '';
 }
 
 function saveLocal(){
@@ -415,6 +434,83 @@ function setQuizMeta(slug, patch){
   if(!slug) return;
   state.quizMeta[slug] = { ...getQuizMeta(slug), ...patch };
   saveQuizMeta();
+}
+
+function buildQuizQuestionsForLanguage(sourceQuestions, language='en'){
+  return (sourceQuestions || []).map((q, i)=>({
+    id: String(q.no || (i + 1)),
+    question: language === 'ja' ? (q.question_ja || '') : (q.question_en || ''),
+    options: {
+      A: language === 'ja' ? (q.optionA_ja || '') : (q.optionA_en || ''),
+      B: language === 'ja' ? (q.optionB_ja || '') : (q.optionB_en || ''),
+      C: language === 'ja' ? (q.optionC_ja || '') : (q.optionC_en || ''),
+      D: language === 'ja' ? (q.optionD_ja || '') : (q.optionD_en || ''),
+    },
+    correct: q.correct || 'A',
+    explanation: language === 'ja' ? (q.explanation_ja || '') : (q.explanation_en || ''),
+    excerpt: q.excerpt || '',
+  }));
+}
+
+function compactPromptText(s='', maxLen=260){
+  return String(s).replace(/\s+/g, ' ').trim().slice(0, maxLen);
+}
+
+function getSelectedReviewNos(){
+  return Object.keys(state.reviewSelections)
+    .filter(no => state.reviewSelections[no])
+    .map(no => Number(no))
+    .filter(no => Number.isFinite(no))
+    .sort((a,b)=>a-b);
+}
+
+function buildReplacementPromptTemplate(groupQuestions, keptQuestions){
+  const flaggedText = groupQuestions.map(q => {
+    const note = (state.reviewNotes[String(q.no)] || '').trim();
+    return [
+      `Slot ${q.no}`,
+      `Current English question: ${compactPromptText(q.question_en, 360)}`,
+      `Current Japanese question: ${compactPromptText(q.question_ja, 360)}`,
+      `Current correct answer: ${q.correct || ''}`,
+      `Reviewer note: ${note || 'No specific note. Improve clarity, accuracy, natural wording, and fit to the source text.'}`,
+    ].join('\n');
+  }).join('\n\n');
+
+  const keptText = keptQuestions.length
+    ? keptQuestions.map(q => `- Slot ${q.no}: ${compactPromptText(q.question_en, 260)}`).join('\n')
+    : '- None';
+
+  return `You are revising selected questions in a bilingual veterinary textbook quiz.
+
+Follow these rules strictly:
+- Use only the provided source text as evidence.
+- Do not use outside knowledge.
+- Generate exactly {{questionCount}} replacement questions.
+- Return the replacement questions in the same order as the flagged slots below.
+- Set the "no" field of each returned item to the original slot number shown below.
+- Keep the output bilingual in English and Japanese.
+- Keep the output schema exactly.
+- Do not duplicate the remaining kept questions listed below.
+- Improve each flagged question based on its reviewer note.
+- The question stem should ask what is correct/appropriate, not "which matches the text".
+- Avoid obvious giveaway wording such as "always", "never", "only", "exclusively", "不要", "常に", "十分である".
+- Include a brief explanation in English and Japanese.
+- Include a short supporting excerpt copied or lightly trimmed from the source text.
+- Return JSON only.
+
+Flagged slots to replace:
+${flaggedText}
+
+Remaining kept questions to avoid duplicating:
+${keptText}
+
+Source text:
+"""{{sourceText}}"""`;
+}
+
+function clearReviewSelections(){
+  state.reviewSelections = {};
+  state.reviewNotes = {};
 }
 
 function resetRendered(){
@@ -594,7 +690,7 @@ function listRowsHtml(){
   `;
 }
 
-async function callGenerateQuizChunk(chunkText, questionCount, title){
+async function callGenerateQuizChunk(chunkText, questionCount, title, overrides={}){
   const functionUrl = `${state.supabaseUrl}/functions/v1/generate_quiz`;
   const res = await fetch(functionUrl, {
     method: 'POST',
@@ -605,8 +701,8 @@ async function callGenerateQuizChunk(chunkText, questionCount, title){
       sourceText: chunkText,
       questionCount,
       title,
-      systemPrompt: state.systemPrompt,
-      promptTemplate: state.promptTemplate,
+      systemPrompt: overrides.systemPrompt || state.systemPrompt,
+      promptTemplate: overrides.promptTemplate || state.promptTemplate,
     }),
   });
 
@@ -630,8 +726,8 @@ async function generateQuizWithAI(){
       Number(state.questionCount || 10),
       state.title || 'Generated Quiz'
     );
-    allQuestions = Array.isArray(json.questions) ? json.questions : [];
-    state.aiStatus = 'AI作問が完了しました。選択した言語で保存できます。';
+    allQuestions = (Array.isArray(json.questions) ? json.questions : []).map(q => ({ ...q, _sourceChunk: sourceText }));
+    state.aiStatus = 'AI作問が完了しました。レビューしてから保存できます。';
   } else {
     const chunks = splitSourceIntoChunks(sourceText, Number(state.questionCount || 10));
     const allocations = allocateQuestions(Number(state.questionCount || 10), chunks);
@@ -651,45 +747,117 @@ async function generateQuizWithAI(){
       );
 
       const partQuestions = Array.isArray(json.questions) ? json.questions : [];
-      allQuestions.push(...partQuestions);
+      allQuestions.push(...partQuestions.map(q => ({ ...q, _sourceChunk: chunks[i] })));
     }
 
     allQuestions = allQuestions.slice(0, Number(state.questionCount || 10));
-    state.aiStatus = `長文モードでのAI作問が完了しました。${chunks.length}分割を結合しました。`;
+    state.aiStatus = `長文モードでのAI作問が完了しました。${chunks.length}分割を結合しました。レビューしてから保存できます。`;
   }
 
   allQuestions = allQuestions.map((q, i) => ({ ...q, no: i + 1 }));
 
+  state.previewQuestions = allQuestions;
+  state.questions = [];
+  state.shareLink = '';
+  state.status = '生成された問題をレビューしてください。問題ごとに作り直しもできます。';
+  state.reviewStatus = '';
+  state.reviewError = '';
+  clearReviewSelections();
   state.generatedEnTsv = makeTsvEnFromQuestions(allQuestions);
   state.generatedJaTsv = makeTsvJaFromQuestions(allQuestions);
   state.aiError = '';
   saveLocal();
 }
 
-async function generateAndSaveQuiz(){
+async function regenerateSelectedQuestions(){
+  if(!state.previewQuestions.length) throw new Error('先にクイズを生成してください。');
+
+  const selectedNos = getSelectedReviewNos();
+  if(!selectedNos.length) throw new Error('作り直したい問題にチェックを入れてください。');
+
+  const selectedSet = new Set(selectedNos);
+  const groups = new Map();
+
+  state.reviewError = '';
+  state.reviewStatus = `選択した${selectedNos.length}問を作り直しています...`;
+  render();
+
+  state.previewQuestions.forEach(q => {
+    if(!selectedSet.has(Number(q.no))) return;
+    const chunkKey = q._sourceChunk || state.sourceText.trim();
+    if(!groups.has(chunkKey)) groups.set(chunkKey, []);
+    groups.get(chunkKey).push(q);
+  });
+
+  const replacementMap = new Map();
+  let done = 0;
+  const totalGroups = groups.size;
+
+  for (const [chunkText, groupQuestions] of groups.entries()) {
+    const keptQuestions = state.previewQuestions.filter(q => (q._sourceChunk || state.sourceText.trim()) === chunkText && !selectedSet.has(Number(q.no)));
+    const promptTemplate = buildReplacementPromptTemplate(
+      groupQuestions.sort((a,b)=>a.no-b.no),
+      keptQuestions
+    );
+
+    state.reviewStatus = `選択した${selectedNos.length}問を作り直しています... ${done} / ${totalGroups}`;
+    render();
+
+    const json = await callGenerateQuizChunk(
+      chunkText,
+      groupQuestions.length,
+      `${state.title || 'Generated Quiz'} revision`,
+      { promptTemplate }
+    );
+
+    const newQuestions = Array.isArray(json.questions) ? json.questions : [];
+    groupQuestions.sort((a,b)=>a.no-b.no).forEach((original, idx)=>{
+      const candidate = newQuestions[idx] || {};
+      replacementMap.set(original.no, {
+        ...candidate,
+        no: original.no,
+        _sourceChunk: chunkText,
+      });
+    });
+
+    done += 1;
+  }
+
+  state.previewQuestions = state.previewQuestions
+    .map(q => replacementMap.get(q.no) || q)
+    .sort((a,b)=>a.no-b.no);
+
+  selectedNos.forEach(no => {
+    delete state.reviewSelections[String(no)];
+    delete state.reviewNotes[String(no)];
+  });
+
+  state.generatedEnTsv = makeTsvEnFromQuestions(state.previewQuestions);
+  state.generatedJaTsv = makeTsvJaFromQuestions(state.previewQuestions);
+  state.reviewStatus = `${selectedNos.length}問を作り直しました。レビューを続けるか、そのまま保存できます。`;
+  state.reviewError = '';
+  state.shareLink = '';
+  render();
+}
+
+async function saveReviewedQuiz(){
+  if(!state.previewQuestions.length) throw new Error('先にクイズを生成してください。');
+
   state.aiError = '';
   state.error = '';
   state.shareLink = '';
-  state.aiStatus = 'AIで作問中です...';
-  render();
-
-  await generateQuizWithAI();
-
-  state.tsv = state.autoSaveLanguage === 'ja' ? (state.generatedJaTsv || '') : (state.generatedEnTsv || '');
-  state.status = `${state.autoSaveLanguage === 'ja' ? '日本語版' : 'English版'}のクイズデータを準備しました。`;
-
-  state.questions = parseTSV(state.tsv);
-  state.status = `クイズを準備しました。${state.questions.length}問を認識しました。`;
+  state.questions = buildQuizQuestionsForLanguage(state.previewQuestions, state.autoSaveLanguage);
+  state.status = `${state.autoSaveLanguage === 'ja' ? '日本語版' : 'English版'}で保存するクイズを準備しました。`;
 
   if(!state.slug) state.slug = slugify(state.title);
 
-  state.status = 'Supabaseへ自動保存中です...';
+  state.status = 'Supabaseへ保存中です...';
   render();
 
   await saveQuizToSupabase({autoSlug: true});
   await refreshQuizList();
 
-  state.status = 'AIで作問して保存まで完了しました。共有リンクを使えます。';
+  state.status = '保存が完了しました。共有リンクを使えます。';
   saveLocal();
   render();
 }
@@ -753,7 +921,7 @@ function render(){
       <div class="topbar">
         <div>
           <h1>Quiz Builder</h1>
-          <p class="muted">教科書テキストからAIでクイズを作成し、保存して共有リンクを発行します。</p>
+          <p class="muted">教科書テキストからAIでクイズを作成し、レビューしてから保存し、共有リンクを発行します。</p>
         </div>
         <div><span class="pill">AI quiz flow</span></div>
       </div>
@@ -811,7 +979,7 @@ function render(){
       </details>
 
       <div class="btns">
-        <button class="ghost" id="aiGenerateAndSaveBtn">AIで作問して保存</button>
+        <button class="ghost" id="aiGenerateReviewBtn">AIで作問してレビュー</button>
         <button class="secondary" id="clearBuilderBtn">Clear builder</button>
       </div>
 
@@ -822,13 +990,78 @@ function render(){
     </div>
 
     <div class="card">
-      <h2>2. Answer page settings</h2>
+      <div class="topbar">
+        <div>
+          <h2>2. Review generated quiz</h2>
+          <p class="muted">英語版と日本語版を並べて確認できます。違和感のある問題にはチェックを入れ、メモを書いて作り直せます。</p>
+        </div>
+        <div><span class="pill">${state.previewQuestions.length || 0} questions</span><span class="pill">${getSelectedReviewNos().length} selected</span></div>
+      </div>
+
+      ${!state.previewQuestions.length ? `<div class="alert info" style="margin-top:12px;">まず「AIで作問してレビュー」を押すと、ここに問題と解説が表示されます。</div>` : `
+        <div class="btns" style="margin-top:12px;">
+          <button id="regenerateSelectedBtn" ${getSelectedReviewNos().length ? '' : 'disabled'}>選択した問題を作り直す</button>
+          <button class="secondary" id="clearReviewSelectionBtn">選択を解除</button>
+        </div>
+        ${state.reviewError ? `<div class="alert error section-spacer">${escapeHtml(state.reviewError)}</div>` : ''}
+        ${state.reviewStatus ? `<div class="alert ok section-spacer">${escapeHtml(state.reviewStatus)}</div>` : ''}
+        <div class="section-spacer">
+          ${state.previewQuestions.map(q=>{
+            const note = state.reviewNotes[String(q.no)] || '';
+            const selected = !!state.reviewSelections[String(q.no)];
+            return `
+              <div class="card question ${selected ? 'selected-for-regeneration' : ''}" style="margin-bottom:16px;">
+                <div class="review-head">
+                  <div>
+                    <h3>Q${q.no}</h3>
+                    <div class="small muted">Correct answer: ${escapeHtml(q.correct || '')}</div>
+                  </div>
+                  <label class="small" style="display:flex;align-items:center;gap:8px;margin:0;">
+                    <input type="checkbox" class="review-select" data-no="${escapeHtml(String(q.no))}" ${selected ? 'checked' : ''}>
+                    この問題を作り直す
+                  </label>
+                </div>
+                <div class="review-grid">
+                  <div class="review-panel">
+                    <h4>English</h4>
+                    <div><strong>Question</strong><div class="small" style="margin-top:6px;">${escapeHtml(q.question_en || '')}</div></div>
+                    <div style="margin-top:12px;">
+                      ${['A','B','C','D'].map(key=>`<div class="review-option ${q.correct===key ? 'correct' : ''}"><strong>${key}.</strong> ${escapeHtml(q[`option${key}_en`] || '')}</div>`).join('')}
+                    </div>
+                    ${q.explanation_en ? `<div style="margin-top:12px;"><strong>Explanation</strong><div class="small" style="margin-top:6px;">${escapeHtml(q.explanation_en)}</div></div>` : ''}
+                  </div>
+                  <div class="review-panel">
+                    <h4>日本語</h4>
+                    <div><strong>問題</strong><div class="small" style="margin-top:6px;">${escapeHtml(q.question_ja || '')}</div></div>
+                    <div style="margin-top:12px;">
+                      ${['A','B','C','D'].map(key=>`<div class="review-option ${q.correct===key ? 'correct' : ''}"><strong>${key}.</strong> ${escapeHtml(q[`option${key}_ja`] || '')}</div>`).join('')}
+                    </div>
+                    ${q.explanation_ja ? `<div style="margin-top:12px;"><strong>解説</strong><div class="small" style="margin-top:6px;">${escapeHtml(q.explanation_ja)}</div></div>` : ''}
+                  </div>
+                </div>
+                ${q.excerpt ? `<div style="margin-top:12px;"><strong>Supporting excerpt</strong><div class="small" style="margin-top:6px;">${escapeHtml(q.excerpt)}</div></div>` : ''}
+                <div style="margin-top:12px;">
+                  <label for="reviewNote_${q.no}">作り直しメモ</label>
+                  <textarea class="review-note" id="reviewNote_${q.no}" data-no="${escapeHtml(String(q.no))}" placeholder="例: 問題文が曖昧、選択肢CとDが似すぎている、解説が本文と少しずれている、など">${escapeHtml(note)}</textarea>
+                </div>
+              </div>`;
+          }).join('')}
+        </div>
+      `}
+    </div>
+
+    <div class="card">
+      <h2>3. Answer page settings and save</h2>
       <div class="switches">
         <label class="switchrow"><span><strong>Shuffle question order</strong><br><span class="muted small">回答ページ表示時の問題順をランダム化します。</span></span><input id="shuffleQ" type="checkbox" ${state.shuffleQuestions ? 'checked' : ''}></label>
         <label class="switchrow"><span><strong>Shuffle choice order</strong><br><span class="muted small">選択肢順をランダム化し、正答も追従させます。</span></span><input id="shuffleC" type="checkbox" ${state.shuffleChoices ? 'checked' : ''}></label>
       </div>
 
-      <div class="alert info" style="margin-top:12px;">slug はタイトルから自動生成され、重複時は連番が付きます。</div>
+      <div class="alert info" style="margin-top:12px;">保存時の言語は上の設定に従います。slug はタイトルから自動生成され、重複時は連番が付きます。</div>
+
+      <div class="btns">
+        <button id="saveReviewedQuizBtn" ${state.previewQuestions.length ? '' : 'disabled'}>レビューOKで保存してURLを作る</button>
+      </div>
 
       ${state.shareLink ? `<div style="margin-top:12px;">
         <label for="shareLink">Share link</label>
@@ -843,7 +1076,7 @@ function render(){
     <div class="card">
       <div class="topbar">
         <div>
-          <h2>3. Saved quizzes</h2>
+          <h2>4. Saved quizzes</h2>
           <p class="muted">検索、並べ替え、出題済み管理、非表示管理ができます。</p>
         </div>
         <div class="btns" style="margin-top:0;">
@@ -931,15 +1164,72 @@ function render(){
     render();
   };
 
-  document.getElementById('aiGenerateAndSaveBtn').onclick = async ()=>{
+  document.getElementById('aiGenerateReviewBtn').onclick = async ()=>{
     try{
-      await generateAndSaveQuiz();
+      state.aiError = '';
+      state.error = '';
+      state.shareLink = '';
+      state.aiStatus = 'AIで作問中です...';
+      state.reviewStatus = '';
+      state.reviewError = '';
+      render();
+      await generateQuizWithAI();
+      render();
     }catch(e){
       state.aiStatus = '';
-      state.aiError = e.message || 'AIで作問して保存に失敗しました。';
+      state.aiError = e.message || 'AI作問に失敗しました。';
       render();
     }
   };
+
+  const saveReviewedQuizBtn = document.getElementById('saveReviewedQuizBtn');
+  if(saveReviewedQuizBtn){
+    saveReviewedQuizBtn.onclick = async ()=>{
+      try{
+        await saveReviewedQuiz();
+      }catch(e){
+        state.status = '';
+        state.error = e.message || '保存に失敗しました。';
+        render();
+      }
+    };
+  }
+
+  const regenerateSelectedBtn = document.getElementById('regenerateSelectedBtn');
+  if(regenerateSelectedBtn){
+    regenerateSelectedBtn.onclick = async ()=>{
+      try{
+        await regenerateSelectedQuestions();
+      }catch(e){
+        state.reviewStatus = '';
+        state.reviewError = e.message || '問題の作り直しに失敗しました。';
+        render();
+      }
+    };
+  }
+
+  const clearReviewSelectionBtn = document.getElementById('clearReviewSelectionBtn');
+  if(clearReviewSelectionBtn){
+    clearReviewSelectionBtn.onclick = ()=>{
+      clearReviewSelections();
+      state.reviewStatus = '選択とメモをクリアしました。';
+      state.reviewError = '';
+      render();
+    };
+  }
+
+  document.querySelectorAll('.review-select').forEach(el=>{
+    el.addEventListener('change', e=>{
+      state.reviewSelections[e.target.dataset.no || ''] = e.target.checked;
+      render();
+    });
+  });
+
+  document.querySelectorAll('.review-note').forEach(el=>{
+    el.addEventListener('input', e=>{
+      state.reviewNotes[e.target.dataset.no || ''] = e.target.value;
+    });
+  });
 
   document.getElementById('refreshListBtn').onclick = refreshQuizList;
 
