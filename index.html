@@ -58,6 +58,8 @@
     .list-head,.list-row{display:grid;grid-template-columns:1.3fr .9fr .8fr auto;gap:12px;align-items:center}
     .list-head{padding:0 6px 10px 6px;color:var(--muted);font-size:13px;font-weight:700}
     .list-row{padding:12px 6px;border-top:1px solid var(--line)}
+    .promptbox{margin-top:14px;padding:14px;border:1px solid var(--line);border-radius:16px;background:#fafafa}
+    .promptbox summary{cursor:pointer;font-weight:700}
     @media (max-width:900px){
       .list-head{display:none}
       .list-row{grid-template-columns:1fr;gap:8px}
@@ -69,9 +71,34 @@
 <script>
 const DEFAULT_SUPABASE_URL = "https://pkabndydlnpjpfyxkaao.supabase.co";
 const DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_5DSYUyEVrvTSOspr9LTN4w_RByBkdyp";
-const STORAGE_KEY = "quiz_builder_supabase_list_v2";
+const STORAGE_KEY = "quiz_builder_supabase_list_v3";
+
 const SAMPLE_TSV = `No\tQuestion\tOption A\tOption B\tOption C\tOption D\tCorrect Answer\tExplanation\tSupporting Excerpt
 1\tWhich statement about an ideal renal biomarker is appropriate?\tIt should show wide biologic variability and partial protein binding.\tIt should be easy to measure and cost-effective.\tIt should undergo substantial non-renal metabolism.\tIt should be secreted and reabsorbed by the tubules.\tB\tThe chapter lists easy measurability and cost-effectiveness among the ideal properties of a renal biomarker.\tThe ideal properties of a renal biomarker include ... easy measurability, and cost-effectiveness.`;
+
+const DEFAULT_SYSTEM_PROMPT = `You create high-quality bilingual veterinary textbook quizzes and follow the requested output schema exactly.`;
+
+const DEFAULT_PROMPT_TEMPLATE = `You are creating bilingual multiple-choice quiz questions from a textbook excerpt.
+
+Follow these rules strictly:
+- Use only the provided source text as evidence.
+- Do not use outside knowledge.
+- Create exactly {{questionCount}} four-option multiple-choice questions.
+- Output both English and Japanese versions for each question.
+- Use natural Japanese.
+- Make distractors plausible and comparable in length/granularity.
+- Avoid giveaway wording such as "always", "never", "unnecessary", "不要", "常に", "十分である".
+- Do not bold the correct answer.
+- Randomize correct answer positions across questions.
+- Include a brief explanation in English and Japanese.
+- Include a short supporting excerpt copied or lightly trimmed from the source text.
+- If an abbreviation first appears in a question or explanation, spell it out first.
+- The question stem should ask what is correct/appropriate, not "which matches the text".
+- Return JSON only.
+- The output must match the schema exactly.
+
+Source text:
+"""{{sourceText}}"""`;
 
 function escapeHtml(s=''){ return s.replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
 function norm(s=''){ return s.toLowerCase().replace(/[\s_\-・（）()]/g,'').replace(/：/g,'').trim(); }
@@ -128,6 +155,7 @@ function buildQuestions(questions, shuffleQ, shuffleC){
   if(shuffleQ) qs = shuffleArray(qs);
   return qs;
 }
+
 const state = {
   mode: 'builder',
   title: 'Chapter Quiz',
@@ -152,17 +180,31 @@ const state = {
   aiError: '',
   generatedEnTsv: '',
   generatedJaTsv: '',
+  systemPrompt: DEFAULT_SYSTEM_PROMPT,
+  promptTemplate: DEFAULT_PROMPT_TEMPLATE,
 };
+
 function saveLocal(){
   if(state.mode === 'solver') return;
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    title: state.title, description: state.description, slug: state.slug, tsv: state.tsv,
-    questions: state.questions, shuffleQuestions: state.shuffleQuestions, shuffleChoices: state.shuffleChoices,
-    supabaseUrl: state.supabaseUrl, supabaseKey: state.supabaseKey,
-    sourceText: state.sourceText, questionCount: state.questionCount,
-    generatedEnTsv: state.generatedEnTsv, generatedJaTsv: state.generatedJaTsv,
+    title: state.title,
+    description: state.description,
+    slug: state.slug,
+    tsv: state.tsv,
+    questions: state.questions,
+    shuffleQuestions: state.shuffleQuestions,
+    shuffleChoices: state.shuffleChoices,
+    supabaseUrl: state.supabaseUrl,
+    supabaseKey: state.supabaseKey,
+    sourceText: state.sourceText,
+    questionCount: state.questionCount,
+    generatedEnTsv: state.generatedEnTsv,
+    generatedJaTsv: state.generatedJaTsv,
+    systemPrompt: state.systemPrompt,
+    promptTemplate: state.promptTemplate,
   }));
 }
+
 function loadLocal(){
   const raw = localStorage.getItem(STORAGE_KEY);
   if(!raw) return;
@@ -181,16 +223,21 @@ function loadLocal(){
     state.questionCount = Number(s.questionCount || 10);
     state.generatedEnTsv = s.generatedEnTsv || '';
     state.generatedJaTsv = s.generatedJaTsv || '';
+    state.systemPrompt = s.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+    state.promptTemplate = s.promptTemplate || DEFAULT_PROMPT_TEMPLATE;
   }catch(e){}
 }
+
 function resetRendered(){
   state.rendered = buildQuestions(state.questions, state.shuffleQuestions, state.shuffleChoices);
   state.answers = {};
 }
+
 function getSlugFromQuery(){
   const p = new URLSearchParams(location.search);
   return p.get('quiz');
 }
+
 async function supabaseRequest(path, {method='GET', body=null, prefer=''}={}){
   const headers = {
     'apikey': state.supabaseKey,
@@ -206,6 +253,7 @@ async function supabaseRequest(path, {method='GET', body=null, prefer=''}={}){
   const text = await res.text();
   return text ? JSON.parse(text) : null;
 }
+
 async function saveQuizToSupabase(){
   if(!state.questions.length) throw new Error('先にTSVを読み込んでください。');
   const slug = state.slug || slugify(state.title);
@@ -228,6 +276,7 @@ async function saveQuizToSupabase(){
   state.slug = slug;
   state.shareLink = `${location.origin}${location.pathname}?quiz=${encodeURIComponent(slug)}`;
 }
+
 async function loadQuizFromSupabase(slug){
   const data = await supabaseRequest(`/rest/v1/quizzes?slug=eq.${encodeURIComponent(slug)}&select=slug,title,description,quiz_data`);
   if(!Array.isArray(data) || data.length === 0) throw new Error('指定されたクイズが見つかりませんでした。');
@@ -242,6 +291,7 @@ async function loadQuizFromSupabase(slug){
   state.shuffleChoices = !!qd.shuffleChoices;
   resetRendered();
 }
+
 async function refreshQuizList(){
   state.listStatus = '一覧を読み込み中です...';
   render();
@@ -255,6 +305,7 @@ async function refreshQuizList(){
     render();
   }
 }
+
 function listRowsHtml(){
   if(!state.quizList.length){
     return `<div class="alert info">まだクイズがありません。最初の1件を保存するとここに並びます。</div>`;
@@ -285,33 +336,40 @@ function listRowsHtml(){
     }).join('')}
   `;
 }
+
 async function generateQuizWithAI(){
   const sourceText = state.sourceText.trim();
   if(!sourceText) throw new Error('教科書本文を入力してください。');
   const functionUrl = `${state.supabaseUrl}/functions/v1/generate_quiz`;
   const res = await fetch(functionUrl, {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    sourceText,
-    questionCount: Number(state.questionCount || 10),
-    title: state.title || 'Generated Quiz',
-  }),
-});
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      sourceText,
+      questionCount: Number(state.questionCount || 10),
+      title: state.title || 'Generated Quiz',
+      systemPrompt: state.systemPrompt,
+      promptTemplate: state.promptTemplate,
+    }),
+  });
+
   const json = await res.json().catch(()=> ({}));
   if(!res.ok){
-    throw new Error(json.detail || json.error || `AI作問に失敗しました (${res.status})`);
+    throw new Error(json.detail ? JSON.stringify(json.detail) : (json.error || `AI作問に失敗しました (${res.status})`));
   }
+
   state.generatedEnTsv = json.tsv_en || '';
   state.generatedJaTsv = json.tsv_ja || '';
   state.aiError = '';
   state.aiStatus = 'AI作問が完了しました。English TSV か 日本語 TSV を選んで流し込んでください。';
   saveLocal();
 }
+
 function render(){
   const app = document.getElementById('app');
+
   if(state.mode === 'solver'){
     const answeredCount = Object.keys(state.answers).length;
     const score = state.rendered.reduce((n,q)=> n + ((state.answers[q.id]||'')===q.displayCorrect ? 1 : 0), 0);
@@ -390,12 +448,44 @@ function render(){
         <div><label for="questionCount">Question count</label><input id="questionCount" type="number" min="1" max="20" value="${escapeHtml(String(state.questionCount))}"></div>
         <div><label for="title">Quiz title</label><input id="title" type="text" value="${escapeHtml(state.title)}"></div>
       </div>
-      <div style="margin-top:14px;"><label for="sourceText">Source textbook text</label><textarea id="sourceText" placeholder="ここに教科書本文を貼り付けます。">${escapeHtml(state.sourceText)}</textarea></div>
+
+      <div style="margin-top:14px;">
+        <label for="sourceText">Source textbook text</label>
+        <textarea id="sourceText" placeholder="ここに教科書本文を貼り付けます。">${escapeHtml(state.sourceText)}</textarea>
+      </div>
+
+      <details class="promptbox">
+        <summary>Prompt settings</summary>
+        <p class="small muted">初期プロンプトを可視化しています。ここを編集すると、その内容が今回のAI作問に使われます。</p>
+
+        <div style="margin-top:12px;">
+          <label for="systemPrompt">System prompt</label>
+          <textarea id="systemPrompt" style="min-height:120px;">${escapeHtml(state.systemPrompt)}</textarea>
+        </div>
+
+        <div style="margin-top:12px;">
+          <label for="promptTemplate">Prompt template</label>
+          <textarea id="promptTemplate" style="min-height:320px;">${escapeHtml(state.promptTemplate)}</textarea>
+        </div>
+
+        <div class="alert info" style="margin-top:12px;">
+          <div class="small">
+            <strong>使える置換タグ</strong><br>
+            <span class="mono">{{questionCount}}</span> と <span class="mono">{{sourceText}}</span> は実行時に置き換えられます。
+          </div>
+        </div>
+
+        <div class="btns">
+          <button class="secondary" id="resetPromptBtn">Reset prompt to defaults</button>
+        </div>
+      </details>
+
       <div class="btns">
         <button id="aiGenerateBtn">AIで作問</button>
         <button class="secondary" id="useEnTsvBtn" ${state.generatedEnTsv ? '' : 'disabled'}>English TSVを使う</button>
         <button class="secondary" id="useJaTsvBtn" ${state.generatedJaTsv ? '' : 'disabled'}>日本語TSVを使う</button>
       </div>
+
       ${state.aiError ? `<div class="alert error" style="margin-top:12px;">${escapeHtml(state.aiError)}</div>` : ''}
       ${state.aiStatus ? `<div class="alert ok" style="margin-top:12px;">${escapeHtml(state.aiStatus)}</div>` : ''}
     </div>
@@ -403,9 +493,10 @@ function render(){
     <div class="card">
       <h2>2. Quiz data</h2>
       <div class="row">
-        <div><label for="slug">Slug</label><input id="slug" type="text" value="${escapeHtml(state.slug)}" placeholder="chapter-303-en"></div>
+        <div><label for="slug">Slug</label><input id="slug" type="text" value="${escapeHtml(state.slug)}" placeholder="chapter-236-en"></div>
         <div><label for="description">Description</label><input id="description" type="text" value="${escapeHtml(state.description)}"></div>
       </div>
+
       <div style="margin-top:14px;">
         <div class="dropzone" id="dropzone">
           <strong>TSV file drag & drop</strong>
@@ -413,11 +504,13 @@ function render(){
           <div class="btns" style="justify-content:center;"><input id="tsvFile" type="file" accept=".tsv,text/tab-separated-values,text/plain"></div>
         </div>
       </div>
+
       <div style="margin-top:14px;"><label for="tsv">TSV text</label><textarea id="tsv">${escapeHtml(state.tsv)}</textarea></div>
       <div class="btns">
         <button id="generateBtn">Generate quiz data</button>
         <button class="secondary" id="sampleBtn">Load sample TSV</button>
       </div>
+
       ${state.error ? `<div class="alert error" style="margin-top:12px;">${escapeHtml(state.error)}</div>` : ''}
       ${state.status ? `<div class="alert ok" style="margin-top:12px;">${escapeHtml(state.status)}</div>` : ''}
     </div>
@@ -455,18 +548,29 @@ function render(){
     </div>
   `;
 
-  ['supabaseUrl','supabaseKey','title','slug','description','tsv','sourceText'].forEach(id=>{
+  ['supabaseUrl','supabaseKey','title','slug','description','tsv','sourceText','systemPrompt','promptTemplate'].forEach(id=>{
     document.getElementById(id).addEventListener('input', e=>{
       state[id] = e.target.value;
       saveLocal();
     });
   });
+
   document.getElementById('questionCount').addEventListener('input', e=>{
     state.questionCount = Number(e.target.value || 10);
     saveLocal();
   });
+
   document.getElementById('shuffleQ').addEventListener('change', e=>{ state.shuffleQuestions = e.target.checked; saveLocal(); });
   document.getElementById('shuffleC').addEventListener('change', e=>{ state.shuffleChoices = e.target.checked; saveLocal(); });
+
+  document.getElementById('resetPromptBtn').onclick = ()=>{
+    state.systemPrompt = DEFAULT_SYSTEM_PROMPT;
+    state.promptTemplate = DEFAULT_PROMPT_TEMPLATE;
+    state.aiStatus = 'プロンプトを初期設定に戻しました。';
+    state.aiError = '';
+    saveLocal();
+    render();
+  };
 
   document.getElementById('aiGenerateBtn').onclick = async ()=>{
     try{
@@ -493,6 +597,7 @@ function render(){
     saveLocal();
     render();
   };
+
   document.getElementById('useJaTsvBtn').onclick = ()=>{
     state.tsv = state.generatedJaTsv || '';
     state.status = '日本語TSV をTSV欄に反映しました。';
@@ -517,10 +622,12 @@ function render(){
     saveLocal();
     render();
   };
+
   document.getElementById('tsvFile').addEventListener('change', async (e)=>{
     const file = e.target.files && e.target.files[0];
     if(file) await readFile(file);
   });
+
   const dz = document.getElementById('dropzone');
   ['dragenter','dragover'].forEach(evt=>dz.addEventListener(evt, e=>{ e.preventDefault(); dz.classList.add('drag'); }));
   ['dragleave','drop'].forEach(evt=>dz.addEventListener(evt, e=>{ e.preventDefault(); dz.classList.remove('drag'); }));
@@ -588,6 +695,7 @@ function render(){
     };
   });
 }
+
 (async function init(){
   loadLocal();
   if(!state.slug) state.slug = slugify(state.title);
