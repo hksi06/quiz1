@@ -452,6 +452,15 @@ function buildQuizQuestionsForLanguage(sourceQuestions, language='en'){
   }));
 }
 
+function getSupabaseBaseUrl(){
+  let url = String(state.supabaseUrl || DEFAULT_SUPABASE_URL).trim();
+  if(!url) url = DEFAULT_SUPABASE_URL;
+  url = url.replace(/\/+$/g, '');
+  url = url.replace(/\/rest\/v1$/i, '');
+  url = url.replace(/\/functions\/v1$/i, '');
+  return url || DEFAULT_SUPABASE_URL;
+}
+
 function compactPromptText(s='', maxLen=260){
   return String(s).replace(/\s+/g, ' ').trim().slice(0, maxLen);
 }
@@ -530,7 +539,13 @@ async function supabaseRequest(path, {method='GET', body=null, prefer=''}={}){
   };
   if(body !== null) headers['Content-Type'] = 'application/json';
   if(prefer) headers['Prefer'] = prefer;
-  const res = await fetch(state.supabaseUrl + path, { method, headers, body: body !== null ? JSON.stringify(body) : undefined });
+  const baseUrl = getSupabaseBaseUrl();
+  let res;
+  try{
+    res = await fetch(baseUrl + path, { method, headers, body: body !== null ? JSON.stringify(body) : undefined });
+  }catch(err){
+    throw new Error(`Supabaseに接続できませんでした。URL設定またはネットワークを確認してください。 (${baseUrl})`);
+  }
   if(!res.ok){
     const text = await res.text();
     throw new Error(`Supabase error ${res.status}: ${text}`);
@@ -691,20 +706,28 @@ function listRowsHtml(){
 }
 
 async function callGenerateQuizChunk(chunkText, questionCount, title, overrides={}){
-  const functionUrl = `${state.supabaseUrl}/functions/v1/generate_quiz`;
-  const res = await fetch(functionUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      sourceText: chunkText,
-      questionCount,
-      title,
-      systemPrompt: overrides.systemPrompt || state.systemPrompt,
-      promptTemplate: overrides.promptTemplate || state.promptTemplate,
-    }),
-  });
+  const functionUrl = `${getSupabaseBaseUrl()}/functions/v1/generate_quiz`;
+
+  let res;
+  try{
+    res = await fetch(functionUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': state.supabaseKey,
+        'Authorization': 'Bearer ' + state.supabaseKey,
+      },
+      body: JSON.stringify({
+        sourceText: chunkText,
+        questionCount,
+        title,
+        systemPrompt: overrides.systemPrompt || state.systemPrompt,
+        promptTemplate: overrides.promptTemplate || state.promptTemplate,
+      }),
+    });
+  }catch(err){
+    throw new Error(`AI作問APIに接続できませんでした。Supabase URL、Edge Function、またはネットワークを確認してください。 (${functionUrl})`);
+  }
 
   const json = await res.json().catch(()=> ({}));
   if(!res.ok){
