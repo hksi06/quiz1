@@ -105,10 +105,13 @@ Follow these rules strictly:
 - Include a short supporting excerpt copied or lightly trimmed from the source text.
 - If an abbreviation first appears in a question or explanation, spell it out first.
 - The question stem should ask what is correct/appropriate, not "which matches the text".
+- Do not create questions from reference lists, bibliography entries, author lists, acknowledgments, client information, further reading lists, or citation-only material.
+- If such non-teaching sections appear in the pasted text, ignore them and use only the substantive textbook content.
 - Return JSON only.
 - The output must match the schema exactly.
 ・教科書によると、囲み記事では、などの表現をせず、元の文章ではという文脈でなくて一般的な問いと答えの形にしてください。
 ・onlyやexclusivelyなどの正誤がわかりやすい表現は避けてください。
+・引用文献リスト、参考文献、著者情報、謝辞、client information などから作問しないでください。
 
 Source text:
 """{{sourceText}}"""`;
@@ -256,6 +259,50 @@ function splitIntoSections(text=''){
   }
   if (current.length) sections.push(current.join("\n").trim());
   return sections.filter(Boolean);
+}
+const EXCLUDED_SECTION_HEADINGS = [
+  'REFERENCES',
+  'REFERENCE',
+  'BIBLIOGRAPHY',
+  'FURTHER READING',
+  'SUGGESTED READING',
+  'CLIENT INFORMATION',
+  'CLIENT INFORMATION SHEET',
+  'ACKNOWLEDGMENTS',
+  'ACKNOWLEDGEMENTS',
+  'AUTHOR INFORMATION',
+  'AUTHOR AFFILIATIONS',
+];
+function normalizeHeadingForMatch(s=''){
+  return s.toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+}
+function isExcludedSectionHeading(line=''){
+  const normalized = normalizeHeadingForMatch(line);
+  if (!normalized) return false;
+  return EXCLUDED_SECTION_HEADINGS.some(head => normalized === head || normalized.startsWith(head + ' '));
+}
+function preprocessSourceText(text=''){
+  const clean = String(text || '').replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!clean) return '';
+
+  const sections = splitIntoSections(clean);
+  if (sections.length > 1) {
+    return sections
+      .filter(section => {
+        const firstLine = (section.split("\n").find(line => line.trim()) || '').trim();
+        return !isExcludedSectionHeading(firstLine);
+      })
+      .join("\n\n")
+      .trim();
+  }
+
+  const lines = clean.split("\n");
+  const firstExcludedIndex = lines.findIndex(line => isExcludedSectionHeading(line));
+  if (firstExcludedIndex >= 0) {
+    return lines.slice(0, firstExcludedIndex).join("\n").trim();
+  }
+
+  return clean;
 }
 function splitLargeTextFallback(text, maxChars){
   const paragraphs = text.split(/\n{2,}/).map(s=>s.trim()).filter(Boolean);
@@ -537,7 +584,8 @@ function buildReplacementPromptTemplate(groupQuestions, keptQuestions){
       `Current English question: ${compactPromptText(q.question_en, 360)}`,
       `Current Japanese question: ${compactPromptText(q.question_ja, 360)}`,
       `Current correct answer: ${q.correct || ''}`,
-      `Reviewer note: ${note || 'No specific note. Improve clarity, accuracy, natural wording, and fit to the source text.'}`,
+      `Current supporting excerpt: ${compactPromptText(q.excerpt || '', 280)}`,
+      `Mandatory reviewer instruction: ${note || 'Improve clarity, accuracy, natural wording, and fit to the source text.'}`,
     ].join('\n');
   }).join('\n\n');
 
@@ -556,7 +604,10 @@ Follow these rules strictly:
 - Keep the output bilingual in English and Japanese.
 - Keep the output schema exactly.
 - Do not duplicate the remaining kept questions listed below.
-- Improve each flagged question based on its reviewer note.
+- Treat each mandatory reviewer instruction below as a hard requirement.
+- If a reviewer instruction conflicts with the current question, rewrite the question so that the instruction is satisfied.
+- Do not create questions from reference lists, bibliography entries, author lists, acknowledgments, client information, further reading lists, or citation-only material.
+- If the current question appears to be based on citation-only material or a reference list, replace it with a new question based on substantive textbook prose from the source text.
 - The question stem should ask what is correct/appropriate, not "which matches the text".
 - Avoid obvious giveaway wording such as "always", "never", "only", "exclusively", "不要", "常に", "十分である".
 - Include a brief explanation in English and Japanese.
@@ -802,8 +853,17 @@ async function callGenerateQuizChunk(chunkText, questionCount, title, overrides=
 }
 
 async function generateQuizWithAI(){
-  const sourceText = state.sourceText.trim();
-  if(!sourceText) throw new Error('教科書本文を入力してください。');
+  const rawSourceText = state.sourceText.trim();
+  if(!rawSourceText) throw new Error('教科書本文を入力してください。');
+
+  const sourceText = preprocessSourceText(rawSourceText);
+  if(!sourceText) throw new Error('有効な本文が見つかりませんでした。参考文献や付帯情報ではない本文を入力してください。');
+
+  const removedChars = rawSourceText.length - sourceText.length;
+  if (removedChars > 0) {
+    state.aiStatus = `参考文献や付帯情報と思われる部分を自動除外しました。${removedChars}文字を除外して作問します...`;
+    render();
+  }
 
   const useChunking = sourceText.length > 12000 || Number(state.questionCount) > 10;
   let allQuestions = [];
@@ -883,6 +943,7 @@ async function regenerateSelectedQuestions(){
   const totalGroups = groups.size;
 
   for (const [chunkText, groupQuestions] of groups.entries()) {
+    const cleanedChunkText = preprocessSourceText(chunkText);
     const keptQuestions = state.previewQuestions.filter(q => (q._sourceChunk || state.sourceText.trim()) === chunkText && !selectedSet.has(Number(q.no)));
     const promptTemplate = buildReplacementPromptTemplate(
       groupQuestions.sort((a,b)=>a.no-b.no),
@@ -893,7 +954,7 @@ async function regenerateSelectedQuestions(){
     render();
 
     const json = await callGenerateQuizChunk(
-      chunkText,
+      cleanedChunkText || chunkText,
       groupQuestions.length,
       `${state.title || 'Generated Quiz'} revision`,
       { promptTemplate }
@@ -905,7 +966,7 @@ async function regenerateSelectedQuestions(){
       replacementMap.set(original.no, {
         ...candidate,
         no: original.no,
-        _sourceChunk: chunkText,
+        _sourceChunk: cleanedChunkText || chunkText,
       });
     });
 
@@ -1127,7 +1188,7 @@ function render(){
                 ${q.excerpt ? `<div style="margin-top:12px;"><strong>Supporting excerpt</strong><div class="small" style="margin-top:6px;">${escapeHtml(q.excerpt)}</div></div>` : ''}
                 <div style="margin-top:12px;">
                   <label for="reviewNote_${q.no}">作り直しメモ</label>
-                  <textarea class="review-note" id="reviewNote_${q.no}" data-no="${escapeHtml(String(q.no))}" placeholder="例: 問題文が曖昧、選択肢CとDが似すぎている、解説が本文と少しずれている、など">${escapeHtml(note)}</textarea>
+                  <textarea class="review-note" id="reviewNote_${q.no}" data-no="${escapeHtml(String(q.no))}" placeholder="例: 問題文が曖昧、選択肢CとDが似すぎている、解説が本文と少しずれている、引用文献リストからは作問しない、など">${escapeHtml(note)}</textarea>
                 </div>
               </div>`;
           }).join('')}
