@@ -353,6 +353,7 @@ const state = {
   error: '',
   status: '',
   shareLink: '',
+  shareLinks: { en: '', ja: '' },
   quizList: [],
   listStatus: '',
   shuffleQuestions: false,
@@ -390,6 +391,7 @@ function clearBuilderVolatileState(){
   state.error = '';
   state.status = '';
   state.shareLink = '';
+  state.shareLinks = { en: '', ja: '' };
   state.sourceText = '';
   state.questionCount = 10;
   state.aiStatus = '';
@@ -620,10 +622,15 @@ async function findAvailableSlug(baseSlug){
   return `${base}-${n}`;
 }
 
-async function saveQuizToSupabase({autoSlug = false} = {}){
+async function saveQuizToSupabase({autoSlug = false, language = 'en'} = {}){
   if(!state.questions.length) throw new Error('先にクイズを生成してください。');
 
-  let slug = autoSlug ? (slugify(state.title) || 'quiz') : (state.slug || slugify(state.title));
+  const languageSuffix = language === 'ja' ? 'ja' : 'en';
+  const baseSlugCore = slugify(state.title) || 'quiz';
+  let slug = autoSlug
+    ? `${baseSlugCore}-${languageSuffix}`
+    : (state.slug || `${baseSlugCore}-${languageSuffix}`);
+
   if(!slug) throw new Error('タイトルを入力してください。');
 
   if(autoSlug){
@@ -640,6 +647,7 @@ async function saveQuizToSupabase({autoSlug = false} = {}){
     quiz_data: {
       title: state.title,
       description: state.description,
+      language,
       shuffleQuestions: state.shuffleQuestions,
       shuffleChoices: state.shuffleChoices,
       questions: state.questions,
@@ -648,7 +656,9 @@ async function saveQuizToSupabase({autoSlug = false} = {}){
 
   await supabaseRequest('/rest/v1/quizzes', {method:'POST', body: payload});
   state.slug = slug;
-  state.shareLink = `${location.origin}${location.pathname}?quiz=${encodeURIComponent(slug)}`;
+  const link = `${location.origin}${location.pathname}?quiz=${encodeURIComponent(slug)}`;
+  state.shareLink = link;
+  state.shareLinks[language] = link;
 }
 
 async function loadQuizFromSupabase(slug){
@@ -837,7 +847,8 @@ async function generateQuizWithAI(){
   state.previewQuestions = allQuestions;
   state.questions = [];
   state.shareLink = '';
-  state.status = '生成された問題をレビューしてください。問題ごとに作り直しもできます。';
+  state.shareLinks = { en: '', ja: '' };
+  state.status = '生成された問題をレビューしてください。レビュー後に英語版URLと日本語版URLをそれぞれ作れます。';
   state.reviewStatus = '';
   state.reviewError = '';
   clearReviewSelections();
@@ -912,30 +923,28 @@ async function regenerateSelectedQuestions(){
 
   state.generatedEnTsv = makeTsvEnFromQuestions(state.previewQuestions);
   state.generatedJaTsv = makeTsvJaFromQuestions(state.previewQuestions);
-  state.reviewStatus = `${selectedNos.length}問を作り直しました。レビューを続けるか、そのまま保存できます。`;
+  state.reviewStatus = `${selectedNos.length}問を作り直しました。レビューを続けるか、英語版URLまたは日本語版URLを作成できます。`;
   state.reviewError = '';
   state.shareLink = '';
+  state.shareLinks = { en: '', ja: '' };
   render();
 }
 
-async function saveReviewedQuiz(){
+async function saveReviewedQuiz(language='en'){
   if(!state.previewQuestions.length) throw new Error('先にクイズを生成してください。');
 
   state.aiError = '';
   state.error = '';
-  state.shareLink = '';
-  state.questions = buildQuizQuestionsForLanguage(state.previewQuestions, state.autoSaveLanguage);
-  state.status = `${state.autoSaveLanguage === 'ja' ? '日本語版' : 'English版'}で保存するクイズを準備しました。`;
+  state.questions = buildQuizQuestionsForLanguage(state.previewQuestions, language);
+  state.status = `${language === 'ja' ? '日本語版' : 'English版'}の保存を準備しました。`;
 
-  if(!state.slug) state.slug = slugify(state.title);
-
-  state.status = 'Supabaseへ保存中です...';
+  state.status = `Supabaseへ${language === 'ja' ? '日本語版' : 'English版'}を保存中です...`;
   render();
 
-  await saveQuizToSupabase({autoSlug: true});
+  await saveQuizToSupabase({autoSlug: true, language});
   await refreshQuizList();
 
-  state.status = '保存が完了しました。共有リンクを使えます。';
+  state.status = `${language === 'ja' ? '日本語版' : 'English版'}のURLを作成しました。必要ならもう一方の言語も同じレビュー結果から保存できます。`;
   saveLocal();
   render();
 }
@@ -1016,13 +1025,7 @@ function render(){
 
       <div class="row" style="margin-top:14px;">
         <div><label for="questionCount">Question count</label><input id="questionCount" type="number" min="1" max="20" value="${escapeHtml(String(state.questionCount))}"></div>
-        <div>
-          <label for="autoSaveLanguage">Saved quiz language</label>
-          <select id="autoSaveLanguage">
-            <option value="en" ${state.autoSaveLanguage === 'en' ? 'selected' : ''}>English版で保存</option>
-            <option value="ja" ${state.autoSaveLanguage === 'ja' ? 'selected' : ''}>日本語版で保存</option>
-          </select>
-        </div>
+        <div class="alert info" style="align-self:end;">レビュー後、この同じ問題セットから英語版URLと日本語版URLを別々に作成できます。</div>
       </div>
 
       <div style="margin-top:14px;">
@@ -1139,19 +1142,30 @@ function render(){
         <label class="switchrow"><span><strong>Shuffle choice order</strong><br><span class="muted small">選択肢順をランダム化し、正答も追従させます。</span></span><input id="shuffleC" type="checkbox" ${state.shuffleChoices ? 'checked' : ''}></label>
       </div>
 
-      <div class="alert info" style="margin-top:12px;">保存時の言語は上の設定に従います。slug はタイトルから自動生成され、重複時は連番が付きます。</div>
+      <div class="alert info" style="margin-top:12px;">レビュー済みの同じ問題セットから、英語版URLと日本語版URLをそれぞれ保存できます。slug はタイトルから自動生成され、英語版は -en、日本語版は -ja を付けて保存します。重複時は連番が付きます。</div>
 
       <div class="btns">
-        <button id="saveReviewedQuizBtn" ${state.previewQuestions.length ? '' : 'disabled'}>レビューOKで保存してURLを作る</button>
+        <button id="saveReviewedQuizEnBtn" ${state.previewQuestions.length && !state.shareLinks.en ? '' : 'disabled'}>英語版URLを作る</button>
+        <button id="saveReviewedQuizJaBtn" ${state.previewQuestions.length && !state.shareLinks.ja ? '' : 'disabled'}>日本語版URLを作る</button>
       </div>
 
-      ${state.shareLink ? `<div style="margin-top:12px;">
-        <label for="shareLink">Share link</label>
-        <input id="shareLink" type="text" readonly value="${escapeHtml(state.shareLink)}">
-        <div class="btns">
-          <button id="copyLinkBtn">Copy link</button>
-          <a class="buttonlink ghost" href="${escapeHtml(state.shareLink)}" target="_blank" rel="noreferrer">Open answer page</a>
-        </div>
+      ${state.shareLinks.en || state.shareLinks.ja ? `<div style="margin-top:12px;">
+        ${state.shareLinks.en ? `<div style="margin-top:12px;">
+          <label for="shareLinkEn">English share link</label>
+          <input id="shareLinkEn" type="text" readonly value="${escapeHtml(state.shareLinks.en)}">
+          <div class="btns">
+            <button class="copy-share-link" data-link="${escapeHtml(state.shareLinks.en)}">Copy English link</button>
+            <a class="buttonlink ghost" href="${escapeHtml(state.shareLinks.en)}" target="_blank" rel="noreferrer">Open English page</a>
+          </div>
+        </div>` : ''}
+        ${state.shareLinks.ja ? `<div style="margin-top:12px;">
+          <label for="shareLinkJa">Japanese share link</label>
+          <input id="shareLinkJa" type="text" readonly value="${escapeHtml(state.shareLinks.ja)}">
+          <div class="btns">
+            <button class="copy-share-link" data-link="${escapeHtml(state.shareLinks.ja)}">Copy Japanese link</button>
+            <a class="buttonlink ghost" href="${escapeHtml(state.shareLinks.ja)}" target="_blank" rel="noreferrer">Open Japanese page</a>
+          </div>
+        </div>` : ''}
       </div>` : ''}
     </div>
 
@@ -1211,11 +1225,6 @@ function render(){
     render();
   });
 
-  document.getElementById('autoSaveLanguage').addEventListener('change', e=>{
-    state.autoSaveLanguage = e.target.value;
-    saveLocal();
-  });
-
   document.getElementById('listSort').addEventListener('change', e=>{
     state.listSort = e.target.value;
     saveLocal();
@@ -1251,6 +1260,7 @@ function render(){
       state.aiError = '';
       state.error = '';
       state.shareLink = '';
+      state.shareLinks = { en: '', ja: '' };
       state.aiStatus = 'AIで作問中です...';
       state.reviewStatus = '';
       state.reviewError = '';
@@ -1264,14 +1274,27 @@ function render(){
     }
   };
 
-  const saveReviewedQuizBtn = document.getElementById('saveReviewedQuizBtn');
-  if(saveReviewedQuizBtn){
-    saveReviewedQuizBtn.onclick = async ()=>{
+  const saveReviewedQuizEnBtn = document.getElementById('saveReviewedQuizEnBtn');
+  if(saveReviewedQuizEnBtn){
+    saveReviewedQuizEnBtn.onclick = async ()=>{
       try{
-        await saveReviewedQuiz();
+        await saveReviewedQuiz('en');
       }catch(e){
         state.status = '';
-        state.error = e.message || '保存に失敗しました。';
+        state.error = e.message || 'English版の保存に失敗しました。';
+        render();
+      }
+    };
+  }
+
+  const saveReviewedQuizJaBtn = document.getElementById('saveReviewedQuizJaBtn');
+  if(saveReviewedQuizJaBtn){
+    saveReviewedQuizJaBtn.onclick = async ()=>{
+      try{
+        await saveReviewedQuiz('ja');
+      }catch(e){
+        state.status = '';
+        state.error = e.message || '日本語版の保存に失敗しました。';
         render();
       }
     };
@@ -1340,16 +1363,16 @@ function render(){
     });
   });
 
-  const copyBtn = document.getElementById('copyLinkBtn');
-  if(copyBtn){
-    copyBtn.onclick = async ()=>{
+  document.querySelectorAll('.copy-share-link').forEach(btn=>{
+    btn.onclick = async ()=>{
       try{
-        await navigator.clipboard.writeText(state.shareLink);
-        copyBtn.textContent = 'Copied';
-        setTimeout(()=> copyBtn.textContent = 'Copy link', 1400);
+        await navigator.clipboard.writeText(btn.dataset.link || '');
+        const original = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(()=> btn.textContent = original, 1400);
       }catch(e){}
     };
-  }
+  });
 
 }
 
