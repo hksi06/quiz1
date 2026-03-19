@@ -82,11 +82,12 @@ const DEFAULT_SUPABASE_URL = "https://pkabndydlnpjpfyxkaao.supabase.co";
 const DEFAULT_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_5DSYUyEVrvTSOspr9LTN4w_RByBkdyp";
 const STORAGE_KEY = "quiz_builder_supabase_list_v5";
 const QUIZ_META_KEY = "quiz_builder_saved_quiz_meta_v1";
+const PROMPT_DEFAULTS_VERSION = 1;
 
 const SAMPLE_TSV = `No\tQuestion\tOption A\tOption B\tOption C\tOption D\tCorrect Answer\tExplanation\tSupporting Excerpt
 1\tWhich statement about an ideal renal biomarker is appropriate?\tIt should show wide biologic variability and partial protein binding.\tIt should be easy to measure and cost-effective.\tIt should undergo substantial non-renal metabolism.\tIt should be secreted and reabsorbed by the tubules.\tB\tThe chapter lists easy measurability and cost-effectiveness among the ideal properties of a renal biomarker.\tThe ideal properties of a renal biomarker include ... easy measurability, and cost-effectiveness.`;
 
-const DEFAULT_SYSTEM_PROMPT = `You create high-quality bilingual veterinary textbook quizzes and follow the requested output schema exactly.`;
+const DEFAULT_SYSTEM_PROMPT = `You create high-quality bilingual veterinary textbook quizzes and follow the requested output schema exactly. Questions must read like standalone exam items that test general knowledge derived from the source, not like reading-comprehension questions about a specific chapter, text, passage, excerpt, or textbook.`;
 
 const DEFAULT_PROMPT_TEMPLATE = `You are creating bilingual multiple-choice quiz questions from a textbook excerpt.
 
@@ -105,11 +106,18 @@ Follow these rules strictly:
 - Include a short supporting excerpt copied or lightly trimmed from the source text.
 - If an abbreviation first appears in a question or explanation, spell it out first.
 - The question stem should ask what is correct/appropriate, not "which matches the text".
+- Questions must read like standalone exam items, not like reading-comprehension questions about a chapter or passage.
+- Never mention the chapter, text, textbook, excerpt, passage, source text, 本文, 抜粋文, この章, このチャプター, この教科書, or このテキスト in the question stem or explanation.
+- Before finalizing each replacement question, rewrite any text-referential wording into a general-knowledge wording.
+- Questions must read like standalone exam items, not like reading-comprehension questions about a chapter or passage.
+- Never mention the chapter, text, textbook, excerpt, passage, source text, 本文, 抜粋文, この章, このチャプター, この教科書, or このテキスト in the question stem or explanation.
+- Before finalizing each question, rewrite any text-referential wording into a general-knowledge wording.
 - Do not create questions from reference lists, bibliography entries, author lists, acknowledgments, client information, further reading lists, or citation-only material.
 - If such non-teaching sections appear in the pasted text, ignore them and use only the substantive textbook content.
 - Return JSON only.
 - The output must match the schema exactly.
-・教科書によると、囲み記事では、などの表現をせず、元の文章ではという文脈でなくて一般的な問いと答えの形にしてください。
+・教科書によると、囲み記事では、本文では、このテキストでは、抜粋文では、などの表現を使わず、一般的な知識を問う問題文にしてください。
+・問題文は独立した試験問題のように見える文章にしてください。
 ・onlyやexclusivelyなどの正誤がわかりやすい表現は避けてください。
 ・引用文献リスト、参考文献、著者情報、謝辞、client information などから作問しないでください。
 
@@ -416,6 +424,7 @@ const state = {
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   promptTemplate: DEFAULT_PROMPT_TEMPLATE,
   autoSaveLanguage: 'en',
+  promptMode: 'default',
   quizMeta: {},
   listSearch: '',
   listSort: 'created_desc',
@@ -452,15 +461,25 @@ function clearBuilderVolatileState(){
   state.reviewError = '';
 }
 
+function syncPromptMode(){
+  state.promptMode = (
+    state.systemPrompt === DEFAULT_SYSTEM_PROMPT &&
+    state.promptTemplate === DEFAULT_PROMPT_TEMPLATE
+  ) ? 'default' : 'custom';
+}
+
 function saveLocal(){
   if(state.mode === 'solver') return;
+  syncPromptMode();
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     supabaseUrl: state.supabaseUrl,
     supabaseKey: state.supabaseKey,
     shuffleQuestions: state.shuffleQuestions,
     shuffleChoices: state.shuffleChoices,
-    systemPrompt: state.systemPrompt,
-    promptTemplate: state.promptTemplate,
+    promptMode: state.promptMode,
+    promptDefaultsVersion: PROMPT_DEFAULTS_VERSION,
+    systemPrompt: state.promptMode === 'custom' ? state.systemPrompt : '',
+    promptTemplate: state.promptMode === 'custom' ? state.promptTemplate : '',
     autoSaveLanguage: state.autoSaveLanguage,
     listSort: state.listSort,
     showHidden: state.showHidden,
@@ -476,11 +495,19 @@ function loadLocal(){
     state.supabaseKey = s.supabaseKey || state.supabaseKey;
     state.shuffleQuestions = !!s.shuffleQuestions;
     state.shuffleChoices = !!s.shuffleChoices;
-    state.systemPrompt = s.systemPrompt || DEFAULT_SYSTEM_PROMPT;
-    state.promptTemplate = s.promptTemplate || DEFAULT_PROMPT_TEMPLATE;
     state.autoSaveLanguage = s.autoSaveLanguage || 'en';
     state.listSort = s.listSort || 'created_desc';
     state.showHidden = !!s.showHidden;
+
+    if (s.promptMode === 'custom' && Number(s.promptDefaultsVersion || 0) === PROMPT_DEFAULTS_VERSION) {
+      state.systemPrompt = s.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+      state.promptTemplate = s.promptTemplate || DEFAULT_PROMPT_TEMPLATE;
+      state.promptMode = 'custom';
+    } else {
+      state.systemPrompt = DEFAULT_SYSTEM_PROMPT;
+      state.promptTemplate = DEFAULT_PROMPT_TEMPLATE;
+      state.promptMode = 'default';
+    }
   }catch(e){}
 }
 
@@ -1304,6 +1331,7 @@ function render(){
   document.getElementById('resetPromptBtn').onclick = ()=>{
     state.systemPrompt = DEFAULT_SYSTEM_PROMPT;
     state.promptTemplate = DEFAULT_PROMPT_TEMPLATE;
+    state.promptMode = 'default';
     state.aiStatus = 'プロンプトを初期設定に戻しました。';
     state.aiError = '';
     saveLocal();
