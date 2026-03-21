@@ -430,8 +430,9 @@ const state = {
   listSort: 'created_desc',
   showHidden: false,
   previewQuestions: [],
-  reviewSelections: {},
   reviewNotes: {},
+  reviewBusyNo: null,
+  reviewUpdatedNos: {},
   reviewStatus: '',
   reviewError: '',
 };
@@ -455,8 +456,9 @@ function clearBuilderVolatileState(){
   state.generatedEnTsv = '';
   state.generatedJaTsv = '';
   state.previewQuestions = [];
-  state.reviewSelections = {};
   state.reviewNotes = {};
+  state.reviewBusyNo = null;
+  state.reviewUpdatedNos = {};
   state.reviewStatus = '';
   state.reviewError = '';
 }
@@ -595,12 +597,8 @@ function compactPromptText(s='', maxLen=260){
   return String(s).replace(/\s+/g, ' ').trim().slice(0, maxLen);
 }
 
-function getSelectedReviewNos(){
-  return Object.keys(state.reviewSelections)
-    .filter(no => state.reviewSelections[no])
-    .map(no => Number(no))
-    .filter(no => Number.isFinite(no))
-    .sort((a,b)=>a-b);
+function getUpdatedReviewCount(){
+  return Object.keys(state.reviewUpdatedNos || {}).length;
 }
 
 function buildReplacementPromptTemplate(groupQuestions, keptQuestions){
@@ -653,8 +651,9 @@ Source text:
 }
 
 function clearReviewSelections(){
-  state.reviewSelections = {};
   state.reviewNotes = {};
+  state.reviewBusyNo = null;
+  state.reviewUpdatedNos = {};
 }
 
 function resetRendered(){
@@ -945,77 +944,55 @@ async function generateQuizWithAI(){
   saveLocal();
 }
 
-async function regenerateSelectedQuestions(){
+async function regenerateSingleQuestion(no){
   if(!state.previewQuestions.length) throw new Error('先にクイズを生成してください。');
 
-  const selectedNos = getSelectedReviewNos();
-  if(!selectedNos.length) throw new Error('作り直したい問題にチェックを入れてください。');
+  const targetNo = Number(no);
+  if(!Number.isFinite(targetNo)) throw new Error('作り直す問題番号を認識できませんでした。');
 
-  const selectedSet = new Set(selectedNos);
-  const groups = new Map();
+  const original = state.previewQuestions.find(q => Number(q.no) === targetNo);
+  if(!original) throw new Error('指定した問題が見つかりませんでした。');
 
+  const chunkText = original._sourceChunk || state.sourceText.trim();
+  const cleanedChunkText = preprocessSourceText(chunkText);
+  const keptQuestions = state.previewQuestions.filter(q => (q._sourceChunk || state.sourceText.trim()) === chunkText && Number(q.no) !== targetNo);
+  const promptTemplate = buildReplacementPromptTemplate([original], keptQuestions);
+
+  state.reviewBusyNo = targetNo;
   state.reviewError = '';
-  state.reviewStatus = `選択した${selectedNos.length}問を作り直しています...`;
+  state.reviewStatus = `Q${targetNo} を作り直しています...`;
   render();
 
-  state.previewQuestions.forEach(q => {
-    if(!selectedSet.has(Number(q.no))) return;
-    const chunkKey = q._sourceChunk || state.sourceText.trim();
-    if(!groups.has(chunkKey)) groups.set(chunkKey, []);
-    groups.get(chunkKey).push(q);
-  });
-
-  const replacementMap = new Map();
-  let done = 0;
-  const totalGroups = groups.size;
-
-  for (const [chunkText, groupQuestions] of groups.entries()) {
-    const cleanedChunkText = preprocessSourceText(chunkText);
-    const keptQuestions = state.previewQuestions.filter(q => (q._sourceChunk || state.sourceText.trim()) === chunkText && !selectedSet.has(Number(q.no)));
-    const promptTemplate = buildReplacementPromptTemplate(
-      groupQuestions.sort((a,b)=>a.no-b.no),
-      keptQuestions
-    );
-
-    state.reviewStatus = `選択した${selectedNos.length}問を作り直しています... ${done} / ${totalGroups}`;
-    render();
-
+  try{
     const json = await callGenerateQuizChunk(
       cleanedChunkText || chunkText,
-      groupQuestions.length,
+      1,
       `${state.title || 'Generated Quiz'} revision`,
       { promptTemplate }
     );
 
-    const newQuestions = Array.isArray(json.questions) ? json.questions : [];
-    groupQuestions.sort((a,b)=>a.no-b.no).forEach((original, idx)=>{
-      const candidate = newQuestions[idx] || {};
-      replacementMap.set(original.no, {
-        ...candidate,
-        no: original.no,
-        _sourceChunk: cleanedChunkText || chunkText,
-      });
-    });
+    const candidate = (Array.isArray(json.questions) ? json.questions[0] : null) || {};
+    const replacement = {
+      ...candidate,
+      no: original.no,
+      _sourceChunk: cleanedChunkText || chunkText,
+    };
 
-    done += 1;
+    state.previewQuestions = state.previewQuestions
+      .map(q => Number(q.no) === targetNo ? replacement : q)
+      .sort((a,b)=>a.no-b.no);
+
+    state.reviewUpdatedNos[String(targetNo)] = (state.reviewUpdatedNos[String(targetNo)] || 0) + 1;
+    state.generatedEnTsv = makeTsvEnFromQuestions(state.previewQuestions);
+    state.generatedJaTsv = makeTsvJaFromQuestions(state.previewQuestions);
+    state.reviewStatus = `Q${targetNo} を作り直しました。レビューを続けるか、英語版URLまたは日本語版URLを作成できます。`;
+    state.reviewError = '';
+    state.shareLink = '';
+    state.shareLinks = { en: '', ja: '' };
+  } finally {
+    state.reviewBusyNo = null;
+    render();
   }
-
-  state.previewQuestions = state.previewQuestions
-    .map(q => replacementMap.get(q.no) || q)
-    .sort((a,b)=>a.no-b.no);
-
-  selectedNos.forEach(no => {
-    delete state.reviewSelections[String(no)];
-    delete state.reviewNotes[String(no)];
-  });
-
-  state.generatedEnTsv = makeTsvEnFromQuestions(state.previewQuestions);
-  state.generatedJaTsv = makeTsvJaFromQuestions(state.previewQuestions);
-  state.reviewStatus = `${selectedNos.length}問を作り直しました。レビューを続けるか、英語版URLまたは日本語版URLを作成できます。`;
-  state.reviewError = '';
-  state.shareLink = '';
-  state.shareLinks = { en: '', ja: '' };
-  render();
 }
 
 async function saveReviewedQuiz(language='en'){
@@ -1164,33 +1141,30 @@ function render(){
       <div class="topbar">
         <div>
           <h2>2. Review generated quiz</h2>
-          <p class="muted">英語版と日本語版を並べて確認できます。解説に加えて各選択肢の説明も確認できます。違和感のある問題にはチェックを入れ、メモを書いて作り直せます。</p>
+          <p class="muted">英語版と日本語版を並べて確認できます。解説に加えて各選択肢の説明も確認できます。違和感のある問題には、メモを書いてその問題だけ作り直せます。</p>
         </div>
-        <div><span class="pill">${state.previewQuestions.length || 0} questions</span><span class="pill">${getSelectedReviewNos().length} selected</span></div>
+        <div><span class="pill">${state.previewQuestions.length || 0} questions</span><span class="pill">${getUpdatedReviewCount()} updated</span></div>
       </div>
 
       ${!state.previewQuestions.length ? `<div class="alert info" style="margin-top:12px;">まず「AIで作問してレビュー」を押すと、ここに問題と解説、各選択肢の説明が表示されます。</div>` : `
-        <div class="btns" style="margin-top:12px;">
-          <button id="regenerateSelectedBtn" ${getSelectedReviewNos().length ? '' : 'disabled'}>選択した問題を作り直す</button>
-          <button class="secondary" id="clearReviewSelectionBtn">選択を解除</button>
-        </div>
         ${state.reviewError ? `<div class="alert error section-spacer">${escapeHtml(state.reviewError)}</div>` : ''}
         ${state.reviewStatus ? `<div class="alert ok section-spacer">${escapeHtml(state.reviewStatus)}</div>` : ''}
         <div class="section-spacer">
           ${state.previewQuestions.map(q=>{
             const note = state.reviewNotes[String(q.no)] || '';
-            const selected = !!state.reviewSelections[String(q.no)];
+            const updatedCount = state.reviewUpdatedNos[String(q.no)] || 0;
+            const isBusy = Number(state.reviewBusyNo) === Number(q.no);
             return `
-              <div class="card question ${selected ? 'selected-for-regeneration' : ''}" style="margin-bottom:16px;">
+              <div class="card question" style="margin-bottom:16px;${updatedCount ? ' border-color:#93c5fd; box-shadow:0 0 0 2px rgba(147,197,253,.2);' : ''}">
                 <div class="review-head">
                   <div>
                     <h3>Q${q.no}</h3>
                     <div class="small muted">Correct answer: ${escapeHtml(q.correct || '')}</div>
                   </div>
-                  <label class="small" style="display:flex;align-items:center;gap:8px;margin:0;">
-                    <input type="checkbox" class="review-select" data-no="${escapeHtml(String(q.no))}" ${selected ? 'checked' : ''}>
-                    この問題を作り直す
-                  </label>
+                  <div>
+                    ${updatedCount ? `<span class="pill">updated${updatedCount > 1 ? ` ×${updatedCount}` : ''}</span>` : ''}
+                    ${isBusy ? `<span class="pill">regenerating...</span>` : ''}
+                  </div>
                 </div>
                 <div class="review-grid">
                   <div class="review-panel">
@@ -1216,6 +1190,9 @@ function render(){
                 <div style="margin-top:12px;">
                   <label for="reviewNote_${q.no}">作り直しメモ</label>
                   <textarea class="review-note" id="reviewNote_${q.no}" data-no="${escapeHtml(String(q.no))}" placeholder="例: 問題文が曖昧、選択肢CとDが似すぎている、解説が本文と少しずれている、引用文献リストからは作問しない、など">${escapeHtml(note)}</textarea>
+                </div>
+                <div class="btns" style="margin-top:12px;">
+                  <button class="regenerate-one-btn" data-no="${escapeHtml(String(q.no))}" ${state.reviewBusyNo !== null ? 'disabled' : ''}>${isBusy ? '作り直し中...' : 'この問題を作り直す'}</button>
                 </div>
               </div>`;
           }).join('')}
@@ -1389,34 +1366,18 @@ function render(){
     };
   }
 
-  const regenerateSelectedBtn = document.getElementById('regenerateSelectedBtn');
-  if(regenerateSelectedBtn){
-    regenerateSelectedBtn.onclick = async ()=>{
+  document.querySelectorAll('.regenerate-one-btn').forEach(btn=>{
+    btn.onclick = async ()=>{
       try{
-        await regenerateSelectedQuestions();
+        const no = Number(btn.dataset.no || '');
+        await regenerateSingleQuestion(no);
       }catch(e){
         state.reviewStatus = '';
         state.reviewError = e.message || '問題の作り直しに失敗しました。';
+        state.reviewBusyNo = null;
         render();
       }
     };
-  }
-
-  const clearReviewSelectionBtn = document.getElementById('clearReviewSelectionBtn');
-  if(clearReviewSelectionBtn){
-    clearReviewSelectionBtn.onclick = ()=>{
-      clearReviewSelections();
-      state.reviewStatus = '選択とメモをクリアしました。';
-      state.reviewError = '';
-      render();
-    };
-  }
-
-  document.querySelectorAll('.review-select').forEach(el=>{
-    el.addEventListener('change', e=>{
-      state.reviewSelections[e.target.dataset.no || ''] = e.target.checked;
-      render();
-    });
   });
 
   document.querySelectorAll('.review-note').forEach(el=>{
