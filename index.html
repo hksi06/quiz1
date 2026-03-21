@@ -87,7 +87,7 @@ const PROMPT_DEFAULTS_VERSION = 1;
 const SAMPLE_TSV = `No\tQuestion\tOption A\tOption B\tOption C\tOption D\tCorrect Answer\tExplanation\tSupporting Excerpt
 1\tWhich statement about an ideal renal biomarker is appropriate?\tIt should show wide biologic variability and partial protein binding.\tIt should be easy to measure and cost-effective.\tIt should undergo substantial non-renal metabolism.\tIt should be secreted and reabsorbed by the tubules.\tB\tThe chapter lists easy measurability and cost-effectiveness among the ideal properties of a renal biomarker.\tThe ideal properties of a renal biomarker include ... easy measurability, and cost-effectiveness.`;
 
-const DEFAULT_SYSTEM_PROMPT = `You create high-quality bilingual veterinary textbook quizzes and follow the requested output schema exactly. Questions must read like standalone exam items that test general knowledge derived from the source, not like reading-comprehension questions about a specific chapter, text, passage, excerpt, or textbook.`;
+const DEFAULT_SYSTEM_PROMPT = `You create high-quality bilingual veterinary textbook quizzes and follow the requested output schema exactly. Questions must read like standalone exam items that test general knowledge derived from the source, not like reading-comprehension questions about a specific chapter, text, passage, excerpt, or textbook. Distractors must be subtle, plausible, and parallel to the correct answer rather than obviously wrong, absurd, or from an unrelated domain.`;
 
 const DEFAULT_PROMPT_TEMPLATE = `You are creating bilingual multiple-choice quiz questions from a textbook excerpt.
 
@@ -97,27 +97,32 @@ Follow these rules strictly:
 - Create exactly {{questionCount}} four-option multiple-choice questions.
 - Output both English and Japanese versions for each question.
 - Use natural Japanese.
-- Make distractors plausible and comparable in length/granularity.
-- Avoid giveaway wording such as "always", "never", "unnecessary", "不要", "常に", "十分である".
+- The question stem should ask what is correct/appropriate, not "which matches the text".
+- Questions must read like standalone exam items, not like reading-comprehension questions about a chapter or passage.
+- Never mention the chapter, text, textbook, excerpt, passage, source text, 本文, 抜粋文, この章, このチャプター, この教科書, or このテキスト in the question stem or explanation.
+- Before finalizing each question, rewrite any text-referential wording into a general-knowledge wording.
+- Make distractors genuinely competitive:
+  - Each incorrect option should sound plausible to a learner with partial understanding.
+  - Keep all four options in the same domain, same level of specificity, and similar length/tone.
+  - Avoid absurd, opposite, unrelated, or giveaway distractors.
+  - Avoid options that can be ruled out instantly because they are too broad, too narrow, or grammatically mismatched.
+  - Prefer nuanced distinctions in mechanism, indication, interpretation, timing, severity, definition, or comparative appropriateness.
+- Avoid giveaway wording such as "always", "never", "unnecessary", "only", "exclusively", "不要", "常に", and "十分である".
 - Do not bold the correct answer.
 - Randomize correct answer positions across questions.
 - Include a brief explanation in English and Japanese.
 - Include brief choice-by-choice explanations in English and Japanese for options A, B, C, and D, explaining why the correct answer is correct and why each incorrect option is not the best answer.
 - Include a short supporting excerpt copied or lightly trimmed from the source text.
 - If an abbreviation first appears in a question or explanation, spell it out first.
-- The question stem should ask what is correct/appropriate, not "which matches the text".
-- Questions must read like standalone exam items, not like reading-comprehension questions about a chapter or passage.
-- Never mention the chapter, text, textbook, excerpt, passage, source text, 本文, 抜粋文, この章, このチャプター, この教科書, or このテキスト in the question stem or explanation.
-- Before finalizing each replacement question, rewrite any text-referential wording into a general-knowledge wording.
-- Questions must read like standalone exam items, not like reading-comprehension questions about a chapter or passage.
-- Never mention the chapter, text, textbook, excerpt, passage, source text, 本文, 抜粋文, この章, このチャプター, この教科書, or このテキスト in the question stem or explanation.
-- Before finalizing each question, rewrite any text-referential wording into a general-knowledge wording.
 - Do not create questions from reference lists, bibliography entries, author lists, acknowledgments, client information, further reading lists, or citation-only material.
 - If such non-teaching sections appear in the pasted text, ignore them and use only the substantive textbook content.
 - Return JSON only.
 - The output must match the schema exactly.
 ・教科書によると、囲み記事では、本文では、このテキストでは、抜粋文では、などの表現を使わず、一般的な知識を問う問題文にしてください。
 ・問題文は独立した試験問題のように見える文章にしてください。
+・誤答選択肢は、部分理解の受験者なら選びうるもっともらしい内容にしてください。
+・誤答選択肢は、極端に不自然、露骨に逆、本文と無関係、長さや粒度が明らかに不揃い、という形にしないでください。
+・4つの選択肢は、同じ話題・同じ粒度・近い長さでそろえてください。
 ・onlyやexclusivelyなどの正誤がわかりやすい表現は避けてください。
 ・引用文献リスト、参考文献、著者情報、謝辞、client information などから作問しないでください。
 
@@ -396,6 +401,62 @@ function allocateQuestions(total, chunks){
   return alloc;
 }
 
+function clampNumber(value, min, max){
+  return Math.max(min, Math.min(max, value));
+}
+function estimateWordCountFromCleanText(clean=''){
+  const text = String(clean || '').trim();
+  if(!text) return 0;
+  const latinTokens = text.match(/[A-Za-z0-9]+(?:['’.-][A-Za-z0-9]+)*/g) || [];
+  const whitespaceWords = text.split(/\s+/).filter(Boolean).length;
+  const japaneseChars = (text.match(/[぀-ヿ㐀-鿿]/g) || []).length;
+  const japaneseApproxWords = japaneseChars ? Math.round(japaneseChars / 2.5) : 0;
+  return Math.max(latinTokens.length, whitespaceWords, japaneseApproxWords);
+}
+function getQuestionCountMetrics(text=''){
+  const raw = String(text || '').trim();
+  const cleanedText = preprocessSourceText(raw);
+  const estimatedWords = estimateWordCountFromCleanText(cleanedText);
+  const recommended = cleanedText ? clampNumber(Math.round(estimatedWords / 333), 5, 20) : 10;
+  return {
+    cleanedText,
+    estimatedWords,
+    recommended,
+    removedChars: Math.max(0, raw.length - cleanedText.length),
+  };
+}
+function questionCountHintHtml(metrics){
+  if(!metrics.cleanedText){
+    return '本文を貼り付けると、参考文献などを除いた本文量から推奨問題数を自動計算します。';
+  }
+  return `本文推定語数: <span class="mono">${metrics.estimatedWords.toLocaleString('en-US')}</span> words ・ 推奨: <span class="mono">${metrics.recommended}</span>問`;
+}
+function syncQuestionCountUi(){
+  const metrics = getQuestionCountMetrics(state.sourceText);
+  const hint = document.getElementById('questionCountHint');
+  if(hint) hint.innerHTML = questionCountHintHtml(metrics);
+  const modeHint = document.getElementById('questionCountModeHint');
+  if(modeHint){
+    modeHint.textContent = state.questionCountMode === 'auto'
+      ? '本文量に応じた自動設定中です。必要なら手動で変更できます。'
+      : '手動設定中です。「本文長から再計算」を押すと推奨値に戻せます。';
+  }
+  const input = document.getElementById('questionCount');
+  if(input && state.questionCountMode === 'auto'){
+    input.value = String(metrics.recommended);
+  }
+}
+function applyAutoQuestionCount({ force=false, syncDom=false }={}){
+  const metrics = getQuestionCountMetrics(state.sourceText);
+  if(force || state.questionCountMode === 'auto'){
+    state.questionCount = metrics.recommended;
+  }
+  if(syncDom){
+    syncQuestionCountUi();
+  }
+  return metrics;
+}
+
 const state = {
   mode: 'builder',
   title: 'Chapter Quiz',
@@ -417,6 +478,7 @@ const state = {
   supabaseKey: DEFAULT_SUPABASE_PUBLISHABLE_KEY,
   sourceText: '',
   questionCount: 10,
+  questionCountMode: 'auto',
   aiStatus: '',
   aiError: '',
   generatedEnTsv: '',
@@ -451,6 +513,7 @@ function clearBuilderVolatileState(){
   state.shareLinks = { en: '', ja: '' };
   state.sourceText = '';
   state.questionCount = 10;
+  state.questionCountMode = 'auto';
   state.aiStatus = '';
   state.aiError = '';
   state.generatedEnTsv = '';
@@ -634,7 +697,16 @@ Follow these rules strictly:
 - Do not create questions from reference lists, bibliography entries, author lists, acknowledgments, client information, further reading lists, or citation-only material.
 - If the current question appears to be based on citation-only material or a reference list, replace it with a new question based on substantive textbook prose from the source text.
 - The question stem should ask what is correct/appropriate, not "which matches the text".
-- Avoid obvious giveaway wording such as "always", "never", "only", "exclusively", "不要", "常に", "十分である".
+- Questions must read like standalone exam items, not like reading-comprehension questions about a chapter or passage.
+- Never mention the chapter, text, textbook, excerpt, passage, source text, 本文, 抜粋文, この章, このチャプター, この教科書, or このテキスト in the question stem or explanation.
+- Before finalizing each question, rewrite any text-referential wording into a general-knowledge wording.
+- Make distractors genuinely competitive:
+  - Each incorrect option should sound plausible to a learner with partial understanding.
+  - Keep all four options in the same domain, same level of specificity, and similar length/tone.
+  - Avoid absurd, opposite, unrelated, or giveaway distractors.
+  - Avoid options that can be ruled out instantly because they are too broad, too narrow, or grammatically mismatched.
+  - Prefer nuanced distinctions in mechanism, indication, interpretation, timing, severity, definition, or comparative appropriateness.
+- Avoid obvious giveaway wording such as "always", "never", "only", "exclusively", "不要", "常に", and "十分である".
 - Include a brief explanation in English and Japanese.
 - Include brief choice-by-choice explanations in English and Japanese for options A, B, C, and D, explaining why the correct answer is correct and why each incorrect option is not the best answer.
 - Include a short supporting excerpt copied or lightly trimmed from the source text.
@@ -882,6 +954,10 @@ async function generateQuizWithAI(){
   const rawSourceText = state.sourceText.trim();
   if(!rawSourceText) throw new Error('教科書本文を入力してください。');
 
+  if(state.questionCountMode === 'auto'){
+    applyAutoQuestionCount({ force: true });
+  }
+
   const sourceText = preprocessSourceText(rawSourceText);
   if(!sourceText) throw new Error('有効な本文が見つかりませんでした。参考文献や付帯情報ではない本文を入力してください。');
 
@@ -1016,6 +1092,10 @@ async function saveReviewedQuiz(language='en'){
 
 function render(){
   const app = document.getElementById('app');
+  const sourceMetrics = getQuestionCountMetrics(state.sourceText);
+  if(state.mode !== 'solver' && state.questionCountMode === 'auto'){
+    state.questionCount = sourceMetrics.recommended;
+  }
 
   if(state.mode === 'solver'){
     const answeredCount = Object.keys(state.answers).length;
@@ -1089,7 +1169,15 @@ function render(){
       </div>
 
       <div class="row" style="margin-top:14px;">
-        <div><label for="questionCount">Question count</label><input id="questionCount" type="number" min="1" max="20" value="${escapeHtml(String(state.questionCount))}"></div>
+        <div>
+          <label for="questionCount">Question count</label>
+          <input id="questionCount" type="number" min="1" max="20" value="${escapeHtml(String(state.questionCount))}">
+          <div id="questionCountHint" class="small muted" style="margin-top:6px;">${questionCountHintHtml(sourceMetrics)}</div>
+          <div id="questionCountModeHint" class="small muted" style="margin-top:4px;">${state.questionCountMode === 'auto' ? '本文量に応じた自動設定中です。必要なら手動で変更できます。' : '手動設定中です。「本文長から再計算」を押すと推奨値に戻せます。'}</div>
+          <div class="btns" style="margin-top:8px;">
+            <button class="secondary" id="recalcQuestionCountBtn" type="button">本文長から再計算</button>
+          </div>
+        </div>
         <div class="alert info" style="align-self:end;">レビュー後、この同じ問題セットから英語版URLと日本語版URLを別々に作成できます。</div>
       </div>
 
@@ -1274,7 +1362,7 @@ function render(){
     </div>
   `;
 
-  ['title','description','sourceText','systemPrompt','promptTemplate','listSearch'].forEach(id=>{
+  ['title','description','systemPrompt','promptTemplate','listSearch'].forEach(id=>{
     const el = document.getElementById(id);
     if(!el) return;
     el.addEventListener('input', e=>{
@@ -1285,10 +1373,18 @@ function render(){
   });
 
   document.getElementById('questionCount').addEventListener('input', e=>{
-    state.questionCount = Number(e.target.value || 10);
+    state.questionCount = clampNumber(Number(e.target.value || 10), 1, 20);
+    state.questionCountMode = 'manual';
     saveLocal();
     render();
   });
+
+  document.getElementById('recalcQuestionCountBtn').onclick = ()=>{
+    state.questionCountMode = 'auto';
+    applyAutoQuestionCount({ force: true });
+    saveLocal();
+    render();
+  };
 
   document.getElementById('listSort').addEventListener('change', e=>{
     state.listSort = e.target.value;
@@ -1301,6 +1397,18 @@ function render(){
     saveLocal();
     render();
   });
+
+  const sourceTextEl = document.getElementById('sourceText');
+  if(sourceTextEl){
+    sourceTextEl.addEventListener('input', e=>{
+      state.sourceText = e.target.value;
+      applyAutoQuestionCount({ syncDom: true });
+      saveLocal();
+    });
+    sourceTextEl.addEventListener('change', ()=>{
+      render();
+    });
+  }
 
   document.getElementById('shuffleQ').addEventListener('change', e=>{ state.shuffleQuestions = e.target.checked; saveLocal(); });
   document.getElementById('shuffleC').addEventListener('change', e=>{ state.shuffleChoices = e.target.checked; saveLocal(); });
